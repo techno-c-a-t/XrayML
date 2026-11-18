@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+  <title data-i18n="docTitle">X-Ray Threat Scanner | On-Device AI</title>
+  <meta name="description" content="Автономное обнаружение угроз на рентгеновских снимках багажа. Нейросетевой инференс на устройстве (WebGPU/WASM) без передачи данных на сервер.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <!-- Cross-Origin Isolation Service Worker for GitHub Pages / Static Hosting -->
+  <script src="coi-serviceworker.min.js"></script>
+  <!-- ONNX Runtime Web с поддержкой WebGPU и WASM SIMD -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.all.min.js"></script>
+</head>
+<body data-theme="dark" data-lang="ru">
+  <!-- Ambient Background Glow & Grid Pattern в стиле проектов technocat -->
+  <div class="ambient-glow" aria-hidden="true"></div>
+  <div class="grid-pattern" aria-hidden="true"></div>
+
+  <!-- Компактная шапка приложения в одну строку -->
+  <header class="app-header">
+    <div class="container header-container">
+      <div class="brand">
+        <div class="brand-badge" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-title">X-Ray <span class="accent-text">Threat Scanner</span></span>
+          <span class="brand-tag">EDGE AI</span>
+        </div>
+      </div>
+
+      <div class="header-right">
+        <!-- Индикатор фонового воркера -->
+        <div class="worker-pill is-hidden" id="workerPill" title="Статус фонового вычисления">
+          <span class="spinner-tiny"></span>
+          <span id="workerStatusText">Спектры...</span>
+        </div>
+
+        <!-- Аппаратный ускоритель -->
+        <div class="hardware-pill" id="hardwarePill" title="Аппаратный ускоритель в браузере">
+          <span class="status-dot status-dot--loading" id="statusDot"></span>
+          <span id="hardwareStatus">Загрузка ядра...</span>
+        </div>
+
+        <!-- Переключатель языков (RU / BE / EN) -->
+        <div class="lang-dropdown">
+          <button class="lang-btn" id="langBtn" type="button" aria-haspopup="true" aria-expanded="false" title="Сменить язык">
+            <span id="currentLangLabel">🇷🇺 RU</span>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="lang-menu" id="langMenu">
+            <button class="lang-option" data-lang="be" type="button">🇧🇾 Беларуская</button>
+            <button class="lang-option" data-lang="en" type="button">🇬🇧 English</button>
+            <button class="lang-option" data-lang="ru" type="button">🇷🇺 Русский</button>
+          </div>
+        </div>
+
+        <!-- Переключатель тем (Dark / Light / Cyber) -->
+        <button class="theme-btn" id="themeToggleBtn" type="button" title="Переключить тему оформления">
+          <span id="themeIcon">🌙</span>
+        </button>
+
+        <!-- GitHub автора -->
+        <a href="https://github.com/techno-c-a-t" target="_blank" rel="noopener noreferrer" class="btn-github-icon" title="GitHub techno-c-a-t">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+          </svg>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <main class="container app-main">
+    <!-- Верхняя панель управления: Сжатый Dropzone + Карусель + Кнопки запуска -->
+    <section class="top-controls" aria-label="Панель загрузки и выбора снимка">
+      <!-- Сжатый в 2 раза блок загрузки (Compact Dropzone) -->
+      <div class="dropzone dropzone--compact" id="dropzone" role="button" tabindex="0" aria-label="Загрузить рентгеновский снимок">
+        <input type="file" id="fileInput" accept="image/*" class="sr-only">
+        <div class="dropzone-content">
+          <div class="dropzone-icon" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <circle cx="8.5" cy="8.5" r="1.5"/>
+              <polyline points="21 15 16 10 5 21"/>
+            </svg>
+          </div>
+          <div class="dropzone-text-group">
+            <div class="dropzone-text">
+              <span class="dropzone-action" data-i18n="dropzoneAction">Нажмите для выбора снимка</span> <span data-i18n="dropzoneOr">или перетащите файл</span>
+            </div>
+            <span class="dropzone-hint" data-i18n="dropzoneHint">PNG, JPG, WebP любого разрешения · 100% On-Device</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Лента снимков (кэш предыдущих сканирований до перезагрузки) -->
+      <div class="samples-wrapper">
+        <div class="samples-label">
+          <span data-i18n="galleryTitle">Лента снимков:</span>
+          <div class="samples-actions">
+            <span class="samples-counter" id="samplesCounter">0 снимков</span>
+            <button class="btn-text" id="btnClearCustom" data-i18n="btnClearCustom">Очистить добавленные</button>
+          </div>
+        </div>
+        <div class="samples-carousel" id="samplesCarousel" role="tablist" aria-label="Выбор снимка">
+          <!-- Генерируется динамически через JS -->
+        </div>
+      </div>
+
+      <!-- Кнопки запуска анализа -->
+      <div class="actions-bar">
+        <button class="btn btn--secondary" id="btnRunStandard" title="Анализировать снимок с текущими параметрами одиночного режима">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <span data-i18n="btnRunStandard">Сканировать фото (Одиночный)</span>
+        </button>
+
+        <button class="btn btn--primary" id="btnRunExtended" title="Запустить мульти-спектральный ансамбль по десатурациям">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          <span data-i18n="btnRunExtended">▷ Extended Мульти-сканирование</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Главная секция инспекции -->
+    <section class="viewer-section" aria-label="Экран инспекции">
+      <!-- 1. Холст просмотра (САМО ФОТО С ДЕТЕКЦИЕЙ) -->
+      <div class="canvas-viewport" id="canvasViewport">
+        <!-- Полоса прогресса спектрального сканирования -->
+        <div class="progress-bar-container is-hidden" id="progressBarContainer">
+          <div class="progress-bar-header">
+            <span class="progress-label" id="progressLabel">Сканирование спектров...</span>
+            <span class="progress-percent" id="progressPercent">0%</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+          </div>
+        </div>
+
+        <div class="loader-overlay is-hidden" id="loaderOverlay">
+          <div class="spinner"></div>
+          <p id="loaderMessage">Обработка снимка нейросетью...</p>
+        </div>
+        <!-- Невидимые вспомогательные холсты -->
+        <canvas id="originalCanvas" class="hidden-canvas"></canvas>
+        <canvas id="normalizedCanvas" class="hidden-canvas"></canvas>
+        <!-- Интерактивный холст -->
+        <canvas id="displayCanvas" class="main-canvas"></canvas>
+      </div>
+
+      <!-- 2. БЛОК СМЕНЫ ТИПА ФОТО С КРАСНОЙ КНОПКОЙ (Ниже фото, выше параметров!) -->
+      <div class="viewer-toolbar">
+        <div class="view-mode-tabs" role="tablist">
+          <button class="tab-btn is-active" id="tabDetected" role="tab" aria-selected="true" data-i18n="tabDetected">С детекцией</button>
+          <button class="tab-btn" id="tabNormalized" role="tab" aria-selected="false" data-i18n="tabNormalized">Нормализованный</button>
+          <button class="tab-btn" id="tabOriginal" role="tab" aria-selected="false" data-i18n="tabOriginal">Исходный скан</button>
+        </div>
+        <div class="detection-status" id="threatBadge">
+          <span class="status-indicator"></span>
+          <span id="threatText" data-i18n="threatWaiting">Ожидание снимка</span>
+        </div>
+      </div>
+
+      <!-- 3. ПАРАМЕТРЫ ИЗОБРАЖЕНИЯ (Расположены ниже тулбара смены фото) -->
+      <div class="parameters-container">
+        <!-- Отдельная панель Extended Mode с пресетами -->
+        <details class="settings-drawer extended-drawer" id="extendedDrawer" open>
+          <summary class="settings-summary extended-summary">
+            <div class="summary-left">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+                <polyline points="2 17 12 22 22 17"/>
+                <polyline points="2 12 12 17 22 12"/>
+              </svg>
+              <span class="badge-tag">EXTENDED SCAN</span>
+              <span data-i18n="extTitle">Параметры мульти-спектрального сканирования</span>
+            </div>
+          </summary>
+
+          <div class="settings-grid extended-grid">
+            <div class="control-group preset-group">
+              <div class="control-header">
+                <label for="extPresetSelect" data-i18n="extPresetLabel">Пресет мульти-сканирования</label>
+              </div>
+              <select id="extPresetSelect" class="form-select">
+                <option value="deep" selected data-i18n="presetDeep">🔬 Глубокий анализ (Порог 20%, 30 шагов, 2 кадра)</option>
+                <option value="paranoid" data-i18n="presetParanoid">🚨 Параноидальный (Порог 15%, 20 шагов, 1 кадр)</option>
+                <option value="balanced" data-i18n="presetBalanced">⚖️ Сбалансированный (Порог 25%, 20 шагов, 2 кадра)</option>
+                <option value="custom" data-i18n="presetCustom">⚙️ Пользовательский</option>
+              </select>
+            </div>
+            <div class="control-group">
+              <div class="control-header">
+                <label for="extConfRange" data-i18n="extConfLabel">Порог уверенности спектров</label>
+                <span class="control-val" id="extConfVal">0.20</span>
+              </div>
+              <input type="range" id="extConfRange" min="0.05" max="0.70" step="0.05" value="0.20">
+            </div>
+            <div class="control-group">
+              <div class="control-header">
+                <label for="extStepRange" data-i18n="extStepsLabel">Количество спектров (Шаг)</label>
+                <span class="control-val" id="extStepVal">30 шагов (Δk ≈ 0.03)</span>
+              </div>
+              <input type="range" id="extStepRange" min="10" max="30" step="5" value="30">
+            </div>
+            <div class="control-group">
+              <div class="control-header">
+                <label for="extIouRange" data-i18n="extIouLabel">Фильтр слияния (IoU / WBF)</label>
+                <span class="control-val" id="extIouVal">0.45</span>
+              </div>
+              <input type="range" id="extIouRange" min="0.20" max="0.80" step="0.05" value="0.45">
+            </div>
+            <div class="control-group">
+              <div class="control-header">
+                <label for="extMinHitsRange" data-i18n="extMinHitsLabel">Мин. подтверждений</label>
+                <span class="control-val" id="extMinHitsVal">2 спектра</span>
+              </div>
+              <input type="range" id="extMinHitsRange" min="1" max="5" step="1" value="2">
+            </div>
+          </div>
+        </details>
+
+        <!-- Настройки пайплайна нормализации одиночного режима -->
+        <details class="settings-drawer" id="settingsDrawer">
+          <summary class="settings-summary">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+            <span data-i18n="settingsSingleTitle">Параметры одиночного режима (White Balance & k_sat)</span>
+          </summary>
+          <div class="settings-grid">
+            <div class="control-group">
+              <div class="control-header">
+                <label for="confRange" data-i18n="confThresholdLabel">Порог уверенности (Confidence)</label>
+                <span class="control-val" id="confVal">0.35</span>
+              </div>
+              <input type="range" id="confRange" min="0.10" max="0.90" step="0.05" value="0.35">
+            </div>
+            <div class="control-group">
+              <div class="control-header">
+                <label for="satRange" data-i18n="satLabel">Десатурация (k_sat)</label>
+                <span class="control-val" id="satVal">0.42</span>
+              </div>
+              <input type="range" id="satRange" min="0.0" max="1.0" step="0.02" value="0.42">
+            </div>
+            <div class="control-group">
+              <div class="control-header">
+                <label for="whiteRange" data-i18n="whitePointLabel">Точка белого (Target White)</label>
+                <span class="control-val" id="whiteVal">248</span>
+              </div>
+              <input type="range" id="whiteRange" min="200" max="255" step="1" value="248">
+            </div>
+            <div class="control-checkbox">
+              <label class="checkbox-label">
+                <input type="checkbox" id="normalizeToggle" checked>
+                <span data-i18n="normToggleLabel">Включить физическую нормализацию (полярность, фон, десатурация)</span>
+              </label>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <!-- Карточки телеметрии и метрик -->
+      <div class="telemetry-panel" id="telemetryPanel">
+        <div class="metric-card">
+          <span class="metric-title" data-i18n="metricThreats">Детекции угроз</span>
+          <span class="metric-number" id="threatCount">0</span>
+          <span class="metric-desc" id="threatDetail" data-i18n="threatNone">Угроз не обнаружено</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-title" data-i18n="metricPolarity">Полярность кадра</span>
+          <span class="metric-number" id="polarityStatus">—</span>
+          <span class="metric-desc" id="polarityDetail">Автоопределение</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-title" data-i18n="metricInferTime">Время инференса</span>
+          <span class="metric-number" id="inferTime">— ms</span>
+          <span class="metric-desc" id="inferBackend">On-Device Edge</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-title" data-i18n="metricResolution">Размер снимка</span>
+          <span class="metric-number" id="imageResolution">— × —</span>
+          <span class="metric-desc">Входной кадр</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Раздел про автора (Technocat) в фирменном стиле портфолио -->
+    <section class="author-section" id="author" aria-label="Об авторе">
+      <div class="section-header">
+        <span class="section-tag" data-i18n="authorTag">Создатель</span>
+        <h2 class="section-title" data-i18n="authorTitle">Об авторе проекта</h2>
+      </div>
+      <div class="author-card">
+        <div class="author-avatar-box">
+          <img src="https://technocat.cc/avatar.png" alt="Nikitos" class="author-avatar" onerror="this.src='https://avatars.githubusercontent.com/u/103648557?v=4'">
+        </div>
+        <div class="author-details">
+          <h3 class="author-name" data-i18n="authorName">Nikitos (@techno_c_a_t)</h3>
+          <p class="author-bio" data-i18n="authorBio">
+            Студент ПМИ, разработчик решений на C++, Python, Linux, Embedded и On-Device Edge AI. Автор проектов NSLDAI (Phantom), SwipeBeat и X-Ray Threat Scanner.
+          </p>
+          <div class="author-links">
+            <a href="https://technocat.cc" target="_blank" rel="noopener noreferrer" class="btn btn--primary">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              <span data-i18n="authorBtnPortfolio">Портфолио technocat.cc</span>
+            </a>
+            <a href="https://t.me/techno_c_a_t" target="_blank" rel="noopener noreferrer" class="btn btn--secondary">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.75-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
+              <span data-i18n="authorBtnTelegram">Telegram</span>
+            </a>
+            <a href="https://github.com/techno-c-a-t" target="_blank" rel="noopener noreferrer" class="btn btn--secondary">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+            </svg>
+            <span data-i18n="authorBtnGithub">GitHub</span>
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- Подвал приложения -->
+<footer class="app-footer">
+  <div class="container footer-content">
+    <p data-i18n="footerText">Архитектура YOLO11 nano · 100% On-Device WebGPU/WASM · Снимки не отправляются на сервер</p>
+    <p class="footer-author">© 2026 X-Ray Threat Scanner · Created by <a href="https://technocat.cc" target="_blank" rel="noopener">@techno_c_a_t</a></p>
+  </div>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
