@@ -1,5 +1,5 @@
-import { XrayNormalizer } from './xray-normalizer.js?v=4';
-import { YoloDetector } from './yolo-detector.js?v=4';
+import { XrayNormalizer } from './xray-normalizer.js?v=6';
+import { YoloDetector } from './yolo-detector.js?v=6';
 
 // Список встроенных сэмплов из папки samples/
 const BUILTIN_SAMPLES = [

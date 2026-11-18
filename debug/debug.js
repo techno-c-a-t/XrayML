@@ -1,5 +1,5 @@
-import { XrayNormalizer } from '../xray-normalizer.js?v=4';
-import { YoloDetector } from '../yolo-detector.js?v=4';
+import { XrayNormalizer } from '../xray-normalizer.js?v=6';
+import { YoloDetector } from '../yolo-detector.js?v=6';
 
 const SAMPLES = [
   { id: 'image2', name: 'Снимок 2 (Оружие)', path: '../samples/image2.jpg' },
