@@ -1,5 +1,5 @@
-import { XrayNormalizer } from './xray-normalizer.js?v=6';
-import { YoloDetector } from './yolo-detector.js?v=6';
+import { XrayNormalizer } from './xray-normalizer.js?v=7';
+import { YoloDetector } from './yolo-detector.js?v=7';
 
 // Список встроенных сэмплов из папки samples/
 const BUILTIN_SAMPLES = [
@@ -357,10 +357,11 @@ async function init() {
 
   // Инициализация нейросети
   try {
-    els.hardwareStatus.textContent = 'Инициализация WebGPU...';
+    els.hardwareStatus.textContent = 'Инициализация ускорителя...';
     await state.detector.loadModel((progress) => {
       if (progress.status === 'ready') {
-        els.hardwareStatus.textContent = 'WebGPU (Adreno/GPU)';
+        const title = progress.provider === 'webgpu' ? 'WebGPU (Adreno/GPU)' : 'WASM SIMD';
+        els.hardwareStatus.textContent = title;
         els.statusDot.classList.remove('status-dot--loading');
       }
     });
@@ -368,15 +369,14 @@ async function init() {
     // По умолчанию при загрузке страницы: загружаем первый образец и сразу запускаем ГЛУБОКОЕ МУЛЬТИ-СКАНИРОВАНИЕ
     if (state.samples.length > 0) {
       await loadSample(state.samples[0], false);
-      console.log('Автозапуск глубокого мульти-сканирования на WebGPU...');
+      console.log('Автозапуск глубокого мульти-сканирования...');
       await processImage(state.currentImage, true);
     }
   } catch (err) {
-    console.error('Ошибка загрузки модели WebGPU:', err);
-    els.hardwareStatus.textContent = 'Ошибка WebGPU';
+    console.error('Ошибка загрузки модели:', err);
+    els.hardwareStatus.textContent = 'Ошибка ONNX';
     els.statusDot.style.background = '#EF4444';
     els.statusDot.classList.remove('status-dot--loading');
-    alert(err.message || 'Ошибка WebGPU');
   }
 }
 

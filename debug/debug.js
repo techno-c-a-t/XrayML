@@ -1,5 +1,5 @@
-import { XrayNormalizer } from '../xray-normalizer.js?v=6';
-import { YoloDetector } from '../yolo-detector.js?v=6';
+import { XrayNormalizer } from '../xray-normalizer.js?v=7';
+import { YoloDetector } from '../yolo-detector.js?v=7';
 
 const SAMPLES = [
   { id: 'image2', name: 'Снимок 2 (Оружие)', path: '../samples/image2.jpg' },
@@ -215,28 +215,30 @@ async function init() {
   buildCarousel();
 
   try {
-    els.hardwareStatus.textContent = 'Инициализация WebGPU...';
+    els.hardwareStatus.textContent = 'Инициализация нейросети...';
     await state.detector.loadModel((p) => {
       if (p.status === 'ready') {
-        els.hardwareStatus.textContent = 'WebGPU (Adreno/GPU)';
+        const isGpu = p.provider === 'webgpu';
+        els.hardwareStatus.textContent = isGpu ? 'WebGPU (Adreno/GPU)' : `WASM SIMD (${state.selectedThreads} thr)`;
         els.statusDot.classList.remove('status-dot--loading');
+        els.activeThreadsBadge.textContent = isGpu ? '🚀 WebGPU Аппаратный (GPU)' : `CPU WASM SIMD (${state.selectedThreads} ядер)`;
+        if (els.coresModeBadge) {
+          els.coresModeBadge.textContent = isGpu ? 'Аппаратный шейдерный конвейер' : 'SIMD векторные инструкции x8';
+        }
       }
     });
-
-    els.activeThreadsBadge.textContent = '🚀 Аппаратный WebGPU (GPU)';
 
     if (SAMPLES.length > 0) {
       await loadSample(SAMPLES[0]);
       runProfiledExtendedScan();
     }
   } catch (err) {
-    console.error('Ошибка инициализации WebGPU:', err);
-    els.hardwareStatus.textContent = 'Ошибка WebGPU';
+    console.error('Ошибка инициализации модели:', err);
+    els.hardwareStatus.textContent = 'Ошибка ONNX';
     els.statusDot.style.background = '#ef4444';
     els.statusDot.classList.remove('status-dot--loading');
-    els.bannerTitle.textContent = 'Ошибка инициализации WebGPU';
-    els.bannerSub.textContent = err.message || 'WebGPU не поддерживается';
-    alert(err.message || 'Ошибка WebGPU');
+    els.bannerTitle.textContent = 'Ошибка загрузки модели';
+    els.bannerSub.textContent = err.message || 'Не удалось загрузить веса ONNX';
   }
 }
 
@@ -279,9 +281,16 @@ async function loadSample(sample) {
   els.normalizedCanvas.height = h;
   els.normalizedCanvas.getContext('2d', { willReadFrequently: true }).drawImage(img, 0, 0);
 
+  // Сразу выполняем нормализацию и полярность базы
+  state.normalizer.prepareBase(els.normalizedCanvas);
+
   els.bannerTitle.textContent = `Снимок загружен: ${sample.name}`;
   els.bannerSub.textContent = `Разрешение: ${w} × ${h} px · Готов к анализу`;
   els.bannerMetric.textContent = 'Готов';
+
+  state.boxes = [];
+  els.detectStatusPill.className = 'detection-status';
+  els.detectStatusText.textContent = 'Ожидание анализа';
 
   renderDisplay();
 }
@@ -407,6 +416,9 @@ async function runProfiledExtendedScan() {
       const data = typeof outputTensor.getData === 'function' ? await outputTensor.getData() : outputTensor.data;
       sweepInfo.getDataMs = +(performance.now() - tData0).toFixed(2);
       trace.timings.getDataMs += sweepInfo.getDataMs;
+      if (typeof outputTensor.dispose === 'function') {
+        outputTensor.dispose();
+      }
 
       // Декодирование боксов и NMS
       const tNms0 = performance.now();
@@ -414,7 +426,7 @@ async function runProfiledExtendedScan() {
       const rawBoxes = [];
       for (let b = 0; b < numBoxes; b++) {
         const conf = data[4 * numBoxes + b];
-        if (conf >= 0.20) {
+        if (conf >= 0.15) {
           const cx = data[0 * numBoxes + b];
           const cy = data[1 * numBoxes + b];
           const bw = data[2 * numBoxes + b];
@@ -628,16 +640,25 @@ els.btnRunSingle.addEventListener('click', async () => {
   els.bannerSub.textContent = 'Инференс 1 кадра...';
 
   const t0 = performance.now();
-  const res = await state.detector.detect(els.normalizedCanvas);
+  const res = await state.detector.detect(els.normalizedCanvas, 0.20);
   const total = Math.round(performance.now() - t0);
 
   state.boxes = res.boxes;
   renderDisplay();
 
   els.bannerSpinner.classList.remove('is-active');
-  els.bannerTitle.textContent = `Одиночный скан завершен · Боксов: ${res.boxes.length}`;
+  els.bannerTitle.textContent = `Одиночный скан завершен · Найдено боксов: ${res.boxes.length}`;
   els.bannerSub.textContent = `Время инференса: ${res.metrics.inferenceMs} ms · Всего: ${total} ms`;
   els.bannerMetric.textContent = `${total} ms`;
+
+  if (res.boxes.length > 0) {
+    els.detectStatusPill.className = 'detection-status detection-status--danger';
+    els.detectStatusText.textContent = `УГРОЗА ОБНАРУЖЕНА (${res.boxes.length})`;
+  } else {
+    els.detectStatusPill.className = 'detection-status detection-status--safe';
+    els.detectStatusText.textContent = 'Угроз не обнаружено';
+  }
+
   state.isScanning = false;
 });
 
