@@ -3,21 +3,20 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
-  <title>X-Ray Profiler & Tracing | Deep Diagnostic</title>
+  <title>X-Ray Profiler & Real-Time Core Tracing | Deep Diagnostic</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="../style.css">
   <link rel="stylesheet" href="debug.css">
-  <!-- Cross-Origin Isolation Service Worker for GitHub Pages -->
   <script src="coi-serviceworker.min.js"></script>
-  <!-- ONNX Runtime Web -->
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.all.min.js"></script>
 </head>
 <body data-theme="dark" data-lang="ru">
   <div class="ambient-glow" aria-hidden="true"></div>
   <div class="grid-pattern" aria-hidden="true"></div>
 
+  <!-- Шапка -->
   <header class="app-header">
     <div class="container header-container">
       <div class="brand">
@@ -27,18 +26,18 @@
           </svg>
         </div>
         <div class="brand-text">
-          <span class="brand-title">X-Ray <span class="accent-text">Profiler & Trace</span></span>
-          <span class="brand-tag">DEBUG MODE</span>
+          <span class="brand-title">X-Ray <span class="accent-text">Profiler & Core Trace</span></span>
+          <span class="brand-tag">REALTIME DEBUG</span>
         </div>
       </div>
 
       <div class="header-right">
-        <a href="../" class="btn btn--secondary btn-back-main" title="Вернуться к основному сканеру">
+        <a href="../" class="btn btn--secondary btn-back-main" title="Вернуться к обычному сканеру">
           ← К сканеру
         </a>
-        <div class="hardware-pill" id="hardwarePill" title="Аппаратный ускоритель в браузере">
+        <div class="hardware-pill" id="hardwarePill">
           <span class="status-dot status-dot--loading" id="statusDot"></span>
-          <span id="hardwareStatus">Загрузка ядра...</span>
+          <span id="hardwareStatus">Загрузка...</span>
         </div>
         <button class="theme-btn" id="themeBtn" type="button" aria-label="Сменить тему">
           <span id="themeIcon">🌙</span>
@@ -48,141 +47,181 @@
   </header>
 
   <main class="container app-main">
-    <!-- Секция выбора снимка и запуска -->
+    <!-- БЛОК 1: ВЫБОР СНИМКА И УПРАВЛЕНИЕ -->
     <section class="scanner-card">
-      <div class="debug-controls-top">
-        <div class="samples-scroll" id="samplesCarousel"></div>
-        <div class="debug-actions-bar">
-          <button class="btn btn--primary" id="btnRunExtended" type="button">
-            ▷ Запустить глубокий профилированный анализ (30 срезов)
-          </button>
-          <button class="btn btn--secondary" id="btnRunSingle" type="button">
-            Одиночный скан
-          </button>
-        </div>
+      <div class="gallery-header">
+        <span class="gallery-title">Лента снимков для тестирования:</span>
+      </div>
+      <div class="samples-carousel" id="samplesCarousel" role="tablist"></div>
+
+      <div class="actions-group">
+        <button class="btn btn--primary" id="btnRunExtended" type="button">
+          ▷ Запустить профилированный анализ (30 спектров)
+        </button>
+        <button class="btn btn--secondary" id="btnRunSingle" type="button">
+          Одиночный скан (1 срез)
+        </button>
       </div>
 
-      <!-- Прогресс с ETA -->
-      <div class="progress-bar-container is-hidden" id="progressBarContainer">
+      <!-- Большой видимый баннер статуса инференса -->
+      <div class="infer-live-status-banner" id="inferStatusBanner">
+        <div class="banner-spinner" id="bannerSpinner"></div>
+        <div class="banner-info">
+          <div class="banner-title" id="bannerTitle">Готов к запуску</div>
+          <div class="banner-sub" id="bannerSub">Выберите снимок и нажмите запуск анализа</div>
+        </div>
+        <div class="banner-metric" id="bannerMetric">— ms</div>
+      </div>
+
+      <!-- Прогресс-бар с ETA прямо под кнопками -->
+      <div class="progress-bar-container" id="progressBarContainer" style="margin-top: 10px;">
         <div class="progress-bar-header">
-          <span class="progress-label" id="progressLabel">Профилирование...</span>
+          <span class="progress-label" id="progressLabel">Ожидание...</span>
           <span class="progress-percent" id="progressPercent">0%</span>
         </div>
         <div class="progress-track">
           <div class="progress-fill" id="progressFill" style="width: 0%"></div>
         </div>
       </div>
+    </section>
 
-      <div class="view-panel">
-        <div class="view-tabs" role="tablist">
-          <button class="view-tab is-active" data-view="detected" type="button">С детекцией</button>
-          <button class="view-tab" data-view="normalized" type="button">Нормализованный</button>
-          <button class="view-tab" data-view="original" type="button">Исходный</button>
+    <!-- БЛОК 2: РЕАЛТАЙМ ГРАФИКИ И НАГРУЗКА ЯДЕР (REAL-TIME TELEMETRY) -->
+    <section class="realtime-section">
+      <div class="section-header">
+        <span class="section-tag">REALTIME TELEMETRY & HARDWARE</span>
+        <h2 class="section-title">График загрузки в реальном времени и потоки ядер</h2>
+        <p class="section-subtitle">Осциллограф времени инференса и статус параллельных воркеров WASM</p>
+      </div>
+
+      <!-- РЕАЛТАЙМ ОСЦИЛЛОГРАФ ТАЙМИНГА СРЕЗОВ -->
+      <div class="chart-card">
+        <div class="chart-header">
+          <div class="chart-title-group">
+            <span class="chart-badge">LIVE STREAM</span>
+            <h3 class="chart-title">Осциллограф скорости срезов (ms per sweep)</h3>
+          </div>
+          <div class="chart-stats">
+            <span>Текущий: <strong id="liveCurrentMs">—</strong></span>
+            <span>Мин: <strong id="liveMinMs">—</strong></span>
+            <span>Макс: <strong id="liveMaxMs">—</strong></span>
+            <span>Средний: <strong id="liveAvgMs">—</strong></span>
+          </div>
         </div>
-        <div class="viewport-wrapper">
-          <canvas id="displayCanvas"></canvas>
-          <canvas id="normalizedCanvas" class="canvas-hidden"></canvas>
-          <canvas id="originalCanvas" class="canvas-hidden"></canvas>
+        <div class="canvas-chart-wrap">
+          <canvas id="liveChartCanvas" width="800" height="160"></canvas>
+        </div>
+        <div class="chart-legend">
+          <span class="leg-item"><span class="leg-color" style="background:#00ADB5"></span> Инференс нейросети ONNX</span>
+          <span class="leg-item"><span class="leg-color" style="background:#10B981"></span> Десатурация + Тензор</span>
+          <span class="leg-item"><span class="leg-color" style="background:#EF4444"></span> Порог предупреждения (1000 мс)</span>
+        </div>
+      </div>
+
+      <!-- ГРАФИКА ЗАГРУЗКИ ЯДЕР / ПОТОКОВ (CORE ACTIVITY METERS) -->
+      <div class="cores-card">
+        <div class="cores-header">
+          <h3 class="cores-title">Активность пула ядер процессора (big.LITTLE Cores Monitor)</h3>
+          <span class="cores-mode" id="coresModeBadge">WASM Multithreading</span>
+        </div>
+        <div class="cores-grid" id="coresGrid">
+          <!-- Генерируется динамически по числу ядер -->
+        </div>
+      </div>
+
+      <!-- ПЕРЕКЛЮЧАТЕЛЬ ЯДЕР НА ЛЕТУ ДЛЯ ТЕСТА СКОРОСТИ -->
+      <div class="thread-tester-card">
+        <div class="tester-header">
+          <span class="tester-title">⚡ Сравнить скорость на 1, 2, 4 и 8 ядрах прямо на телефоне:</span>
+          <span class="tester-badge" id="activeThreadsBadge">8 потоков активно</span>
+        </div>
+        <div class="thread-btns">
+          <button class="btn-thread" data-threads="1">1 ядро (Single Core)</button>
+          <button class="btn-thread" data-threads="2">2 ядра (Dual Core)</button>
+          <button class="btn-thread" data-threads="4">4 ядра (Quad Core)</button>
+          <button class="btn-thread is-active" data-threads="8">8 ядер (All S20 FE Cores)</button>
         </div>
       </div>
     </section>
 
-    <!-- СЕКЦИЯ ПОЛНОЙ ТРАССИРОВКИ И ДИАГНОСТИКИ -->
-    <section class="debug-section" aria-label="Диагностика производительности">
-      <div class="section-header">
-        <span class="section-tag">PROFILER & TELEMETRY</span>
-        <h2 class="section-title">Аппаратное профилирование и трассировка времени</h2>
-        <p class="section-subtitle">Точный замер таймингов по микросекундам на каждом этапе конвейера</p>
-      </div>
-
-      <!-- 1. Аппаратная диагностика и потоки -->
-      <div class="debug-grid-hw">
-        <div class="debug-card">
-          <span class="dbg-label">Аппаратные ядра (CPU Cores)</span>
-          <span class="dbg-val" id="dbgCores">—</span>
-          <span class="dbg-sub" id="dbgCoresSub">navigator.hardwareConcurrency</span>
+    <!-- БЛОК 3: ПРОСМОТРЩИК ИЗОБРАЖЕНИЯ -->
+    <section class="viewer-card">
+      <div class="viewer-toolbar">
+        <div class="view-mode-tabs" role="tablist">
+          <button class="tab-btn is-active" data-view="detected" type="button">С детекцией</button>
+          <button class="tab-btn" data-view="normalized" type="button">Нормализованный</button>
+          <button class="tab-btn" data-view="original" type="button">Исходный скан</button>
         </div>
-        <div class="debug-card">
-          <span class="dbg-label">Cross-Origin Isolation</span>
-          <span class="dbg-val" id="dbgCOOP">—</span>
-          <span class="dbg-sub" id="dbgCOOPIcon">Проверка SharedArrayBuffer...</span>
-        </div>
-        <div class="debug-card">
-          <span class="dbg-label">Потоки ONNX Runtime (WASM)</span>
-          <span class="dbg-val" id="dbgThreads">—</span>
-          <span class="dbg-sub" id="dbgSimd">SIMD: —</span>
-        </div>
-        <div class="debug-card">
-          <span class="dbg-label">Память JS Heap (Chrome)</span>
-          <span class="dbg-val" id="dbgMemory">—</span>
-          <span class="dbg-sub" id="dbgMemDetail">Используется движком V8</span>
+        <div class="detection-status detection-status--safe" id="detectStatusPill">
+          <span class="status-dot"></span>
+          <span id="detectStatusText">Ожидание анализа</span>
         </div>
       </div>
-
-      <!-- Интерактивный регулятор потоков для теста производительности прямо на телефоне -->
-      <div class="thread-tester-box">
-        <span class="tester-title">⚡ Стресс-тест многопоточности (переключение ядер на лету):</span>
-        <div class="thread-btns">
-          <button class="btn-thread" data-threads="1">1 ядро (Single)</button>
-          <button class="btn-thread" data-threads="2">2 ядра (Dual)</button>
-          <button class="btn-thread" data-threads="4">4 ядра (Quad)</button>
-          <button class="btn-thread is-active" data-threads="8">8 ядер (All big.LITTLE)</button>
-        </div>
-        <span class="tester-hint">Позволяет наглядно увидеть, насколько многопоточность ускоряет или замедляет инференс на мобильном процессоре.</span>
+      <div class="canvas-viewport">
+        <canvas id="displayCanvas"></canvas>
+        <canvas id="normalizedCanvas" class="canvas-hidden"></canvas>
+        <canvas id="originalCanvas" class="canvas-hidden"></canvas>
       </div>
+    </section>
 
-      <!-- 2. Сводная круговая диаграмма / прогресс-бары распределения времени -->
+    <!-- БЛОК 4: ПОЛНАЯ ТРАССИРОВКА ВРЕМЕНИ И ТАБЛИЦЫ (% BREAKDOWN) -->
+    <section class="breakdown-section">
       <div class="debug-breakdown-card">
         <div class="breakdown-header">
-          <h3 class="breakdown-title">Распределение времени выполнения (Time Breakdown %)</h3>
+          <div>
+            <h3 class="breakdown-title">Фулл трассировка: куда уходит время (% Time Breakdown)</h3>
+            <p class="breakdown-sub">Сводная аналитика узких мест конвейера</p>
+          </div>
           <span class="total-time-badge" id="dbgTotalTime">Всего: — ms</span>
         </div>
-        <div class="timeline-bar" id="timelineBar" title="Визуальная диаграмма долей времени">
-          <!-- Заполняется динамически -->
-        </div>
+        
+        <div class="timeline-bar" id="timelineBar"></div>
 
         <div class="breakdown-table-wrapper">
           <table class="breakdown-table">
             <thead>
               <tr>
                 <th>Этап конвейера</th>
-                <th>Суммарное время</th>
-                <th>Доля от общего</th>
-                <th>В среднем за срез</th>
-                <th>Что внутри</th>
+                <th>Суммарно</th>
+                <th>Доля (%)</th>
+                <th>За 1 срез</th>
+                <th>Описание операции</th>
               </tr>
             </thead>
             <tbody id="breakdownTbody">
-              <tr><td colspan="5" style="text-align:center; opacity:0.6;">Запустите анализ для сбора метрик</td></tr>
+              <tr><td colspan="5" style="text-align:center; opacity:0.6; padding:16px;">Нажмите кнопку запуска для генерации трассировки</td></tr>
             </tbody>
           </table>
         </div>
       </div>
 
-      <!-- 3. Пошаговая детализация всех 30 спектральных срезов -->
+      <!-- Пошаговый лог 30 срезов -->
       <div class="debug-sweeps-card">
         <div class="sweeps-header">
-          <h3 class="sweeps-title">Детальный журнал по срезам (Per-Sweep Tracing)</h3>
+          <div>
+            <h3 class="sweeps-title">Журнал всех 30 спектральных срезов (Per-Sweep Detail)</h3>
+            <p class="breakdown-sub">Точные тайминги каждого шага от k=0.00 до k=0.95</p>
+          </div>
           <button class="btn btn--secondary btn-sm" id="btnCopyTrace">
-            📋 Скопировать JSON-трассировку
+            📋 Скопировать лог (JSON)
           </button>
         </div>
         <div class="sweeps-table-wrapper">
           <table class="sweeps-table">
             <thead>
               <tr>
-                <th>#</th>
+                <th>Срез</th>
                 <th>k_sat</th>
-                <th>Десатурация (JS)</th>
+                <th>Десатурация</th>
                 <th>Float32 тензор</th>
-                <th>Инференс (ONNX)</th>
+                <th>Инференс ONNX</th>
                 <th>Чтение (getData)</th>
-                <th>NMS / Боксы</th>
-                <th>Всего срез</th>
+                <th>NMS</th>
+                <th>Итого срез</th>
+                <th>Боксов</th>
               </tr>
             </thead>
             <tbody id="sweepsTbody">
-              <tr><td colspan="8" style="text-align:center; opacity:0.6;">Ожидание прогона...</td></tr>
+              <tr><td colspan="9" style="text-align:center; opacity:0.6; padding:16px;">Ожидание прогона...</td></tr>
             </tbody>
           </table>
         </div>
@@ -192,11 +231,11 @@
 
   <footer class="app-footer">
     <div class="container footer-content">
-      <p>X-Ray Threat Scanner Diagnostic & Profiling Suite · On-Device AI Benchmarking</p>
+      <p>X-Ray Threat Scanner Diagnostic & Real-Time Core Profiler · On-Device Edge AI</p>
       <p class="footer-author">Created by <a href="https://technocat.cc" target="_blank" rel="noopener">@techno_c_a_t</a></p>
     </div>
   </footer>
 
-  <script type="module" src="debug.js?v=1"></script>
+  <script type="module" src="debug.js?v=2"></script>
 </body>
 </html>

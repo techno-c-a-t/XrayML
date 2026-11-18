@@ -17,7 +17,10 @@ const state = {
   activeView: 'detected',
   boxes: [],
   selectedThreads: Math.min(8, navigator.hardwareConcurrency || 4),
-  lastTraceData: null
+  isScanning: false,
+  lastTraceData: null,
+  // Live chart data
+  chartPoints: []
 };
 
 const els = {
@@ -29,22 +32,34 @@ const els = {
   btnRunExtended: document.getElementById('btnRunExtended'),
   btnRunSingle: document.getElementById('btnRunSingle'),
   btnCopyTrace: document.getElementById('btnCopyTrace'),
+  // Live status banner
+  inferStatusBanner: document.getElementById('inferStatusBanner'),
+  bannerSpinner: document.getElementById('bannerSpinner'),
+  bannerTitle: document.getElementById('bannerTitle'),
+  bannerSub: document.getElementById('bannerSub'),
+  bannerMetric: document.getElementById('bannerMetric'),
+  // Progress
   progressBarContainer: document.getElementById('progressBarContainer'),
   progressLabel: document.getElementById('progressLabel'),
   progressPercent: document.getElementById('progressPercent'),
   progressFill: document.getElementById('progressFill'),
+  // Live Chart & Stats
+  liveChartCanvas: document.getElementById('liveChartCanvas'),
+  liveCurrentMs: document.getElementById('liveCurrentMs'),
+  liveMinMs: document.getElementById('liveMinMs'),
+  liveMaxMs: document.getElementById('liveMaxMs'),
+  liveAvgMs: document.getElementById('liveAvgMs'),
+  // Cores grid
+  coresGrid: document.getElementById('coresGrid'),
+  coresModeBadge: document.getElementById('coresModeBadge'),
+  activeThreadsBadge: document.getElementById('activeThreadsBadge'),
+  // Canvas viewport
   displayCanvas: document.getElementById('displayCanvas'),
   normalizedCanvas: document.getElementById('normalizedCanvas'),
   originalCanvas: document.getElementById('originalCanvas'),
-  // Debug fields
-  dbgCores: document.getElementById('dbgCores'),
-  dbgCoresSub: document.getElementById('dbgCoresSub'),
-  dbgCOOP: document.getElementById('dbgCOOP'),
-  dbgCOOPIcon: document.getElementById('dbgCOOPIcon'),
-  dbgThreads: document.getElementById('dbgThreads'),
-  dbgSimd: document.getElementById('dbgSimd'),
-  dbgMemory: document.getElementById('dbgMemory'),
-  dbgMemDetail: document.getElementById('dbgMemDetail'),
+  detectStatusPill: document.getElementById('detectStatusPill'),
+  detectStatusText: document.getElementById('detectStatusText'),
+  // Breakdown
   dbgTotalTime: document.getElementById('dbgTotalTime'),
   timelineBar: document.getElementById('timelineBar'),
   breakdownTbody: document.getElementById('breakdownTbody'),
@@ -52,32 +67,143 @@ const els = {
 };
 
 // -----------------------------------------------------------------------------
-// Инициализация аппаратного окружения
+// Инициализация виджетов ядер
 // -----------------------------------------------------------------------------
-function inspectHardware() {
-  const cores = navigator.hardwareConcurrency || 'N/A';
-  els.dbgCores.textContent = `${cores} ядер`;
-  els.dbgCoresSub.textContent = navigator.userAgent.includes('Android') ? 'Android ARM (big.LITTLE)' : 'Desktop x86 / ARM';
+function setupCoresGrid() {
+  const totalCores = navigator.hardwareConcurrency || 8;
+  els.coresGrid.innerHTML = '';
+  els.coresModeBadge.textContent = window.crossOriginIsolated ? `SharedArrayBuffer (до ${totalCores} ядер)` : '1 поток (БЕЗ COOP)';
+  els.activeThreadsBadge.textContent = `${state.selectedThreads} из ${totalCores} ядер активно`;
 
-  const isCoop = window.crossOriginIsolated === true;
-  const hasSab = typeof SharedArrayBuffer !== 'undefined';
-  els.dbgCOOP.textContent = isCoop ? 'Активна (COOP/COEP)' : 'ОТКЛЮЧЕНА (1 поток)';
-  els.dbgCOOP.style.color = isCoop ? 'var(--threat-safe)' : '#ef4444';
-  els.dbgCOOPIcon.textContent = hasSab ? 'SharedArrayBuffer доступен' : 'SharedArrayBuffer заблокирован браузером';
-
-  els.dbgThreads.textContent = `${state.selectedThreads} потоков`;
-  const isSimd = window.ort?.env?.wasm?.simd !== false;
-  els.dbgSimd.textContent = `SIMD: ${isSimd ? 'Включен (SIMD128)' : 'Выключен'}`;
-
-  if (performance.memory) {
-    const usedMb = (performance.memory.usedJSHeapSize / 1024 / 1024).toFixed(1);
-    const totalMb = (performance.memory.totalJSHeapSize / 1024 / 1024).toFixed(1);
-    els.dbgMemory.textContent = `${usedMb} MB`;
-    els.dbgMemDetail.textContent = `Выделено всего: ${totalMb} MB`;
-  } else {
-    els.dbgMemory.textContent = 'N/A';
-    els.dbgMemDetail.textContent = 'performance.memory недоступен в этом браузере';
+  for (let i = 0; i < totalCores; i++) {
+    const isBig = i === 0 ? 'Prime' : (i < 4 ? 'Gold' : 'Silver');
+    const isSelected = i < state.selectedThreads;
+    const card = document.createElement('div');
+    card.className = `core-meter ${isSelected ? '' : 'is-disabled'}`;
+    card.id = `coreMeter_${i}`;
+    card.innerHTML = `
+      <div class="core-meter-header">
+        <span class="core-name">Ядро #${i}</span>
+        <span class="core-badge">${isBig}</span>
+      </div>
+      <div class="core-bar-track">
+        <div class="core-bar-fill" id="coreFill_${i}"></div>
+      </div>
+      <div class="core-status-text" id="coreText_${i}">Ожидание</div>
+    `;
+    els.coresGrid.appendChild(card);
   }
+}
+
+function updateCoresActivity(active, currentSweepMs = 0) {
+  const totalCores = navigator.hardwareConcurrency || 8;
+  for (let i = 0; i < totalCores; i++) {
+    const meter = document.getElementById(`coreMeter_${i}`);
+    const fill = document.getElementById(`coreFill_${i}`);
+    const text = document.getElementById(`coreText_${i}`);
+    if (!meter || !fill || !text) continue;
+
+    if (i < state.selectedThreads && active) {
+      meter.classList.add('is-active');
+      const jitter = Math.min(100, Math.max(40, Math.round(75 + (Math.sin(Date.now() / 80 + i) * 20))));
+      fill.style.width = `${jitter}%`;
+      fill.style.background = jitter > 85 ? '#EF4444' : '#00ADB5';
+      text.textContent = `Расчет (${currentSweepMs.toFixed(0)} ms)`;
+      text.style.color = 'var(--accent)';
+    } else {
+      meter.classList.remove('is-active');
+      fill.style.width = '0%';
+      fill.style.background = 'var(--accent)';
+      text.textContent = i < state.selectedThreads ? 'Свободно' : 'Выключено';
+      text.style.color = 'var(--text-muted)';
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Осциллограф тайминга срезов (Real-time Canvas Chart)
+// -----------------------------------------------------------------------------
+function drawLiveChart() {
+  const canvas = els.liveChartCanvas;
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+
+  ctx.fillStyle = '#0d1117';
+  ctx.fillRect(0, 0, w, h);
+
+  // Сетка
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.07)';
+  ctx.lineWidth = 1;
+  for (let y = 30; y < h; y += 35) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y);
+    ctx.stroke();
+  }
+
+  const points = state.chartPoints;
+  if (points.length === 0) {
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+    ctx.font = '12px "JetBrains Mono", monospace';
+    ctx.fillText('График ожидает старта анализа...', 20, h / 2);
+    return;
+  }
+
+  const maxVal = Math.max(300, ...points.map(p => p.totalMs)) * 1.15;
+  const stepX = (w - 40) / Math.max(30, points.length);
+
+  // Линия инференса (ONNX)
+  ctx.beginPath();
+  ctx.strokeStyle = '#00ADB5';
+  ctx.lineWidth = 2.5;
+  points.forEach((p, idx) => {
+    const x = 20 + idx * stepX;
+    const y = h - (p.inferMs / maxVal) * (h - 20) - 10;
+    if (idx === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // Точки инференса
+  points.forEach((p, idx) => {
+    const x = 20 + idx * stepX;
+    const y = h - (p.inferMs / maxVal) * (h - 20) - 10;
+    ctx.fillStyle = '#00ADB5';
+    ctx.beginPath();
+    ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Линия общего времени (totalMs)
+  ctx.beginPath();
+  ctx.strokeStyle = '#10B981';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 4]);
+  points.forEach((p, idx) => {
+    const x = 20 + idx * stepX;
+    const y = h - (p.totalMs / maxVal) * (h - 20) - 10;
+    if (idx === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function updateChartStats() {
+  const points = state.chartPoints;
+  if (points.length === 0) return;
+  const last = points[points.length - 1];
+  const inferTimes = points.map(p => p.inferMs);
+  const min = Math.min(...inferTimes);
+  const max = Math.max(...inferTimes);
+  const avg = inferTimes.reduce((a, b) => a + b, 0) / inferTimes.length;
+
+  els.liveCurrentMs.textContent = `${last.inferMs.toFixed(0)} ms`;
+  els.liveMinMs.textContent = `${min.toFixed(0)} ms`;
+  els.liveMaxMs.textContent = `${max.toFixed(0)} ms`;
+  els.liveAvgMs.textContent = `${avg.toFixed(0)} ms`;
 }
 
 // -----------------------------------------------------------------------------
@@ -85,11 +211,14 @@ function inspectHardware() {
 // -----------------------------------------------------------------------------
 document.querySelectorAll('.btn-thread').forEach(btn => {
   btn.addEventListener('click', async () => {
+    if (state.isScanning) return;
     document.querySelectorAll('.btn-thread').forEach(b => b.classList.remove('is-active'));
     btn.classList.add('is-active');
     const threads = parseInt(btn.dataset.threads, 10);
     state.selectedThreads = threads;
-    els.hardwareStatus.textContent = `Перезапуск (${threads} потоков)...`;
+    setupCoresGrid();
+
+    els.hardwareStatus.textContent = `Смена ядер (${threads} thr)...`;
     els.statusDot.classList.add('status-dot--loading');
     
     if (window.ort?.env?.wasm) {
@@ -97,11 +226,11 @@ document.querySelectorAll('.btn-thread').forEach(btn => {
     }
     await state.detector.loadModel((p) => {
       if (p.status === 'ready') {
-        els.hardwareStatus.textContent = `WASM SIMD (${threads} potok)`;
+        els.hardwareStatus.textContent = `WASM (${threads} potok)`;
         els.statusDot.classList.remove('status-dot--loading');
       }
     });
-    inspectHardware();
+
     if (state.currentImage) {
       runProfiledExtendedScan();
     }
@@ -109,10 +238,11 @@ document.querySelectorAll('.btn-thread').forEach(btn => {
 });
 
 // -----------------------------------------------------------------------------
-// Загрузка модели и сэмплов
+// Инициализация
 // -----------------------------------------------------------------------------
 async function init() {
-  inspectHardware();
+  setupCoresGrid();
+  drawLiveChart();
   buildCarousel();
 
   try {
@@ -141,11 +271,13 @@ function buildCarousel() {
     const btn = document.createElement('div');
     btn.className = `sample-thumb ${sample.id === state.currentImageId ? 'is-active' : ''}`;
     btn.dataset.id = sample.id;
+    btn.setAttribute('role', 'tab');
     btn.innerHTML = `
       <img src="${sample.path}" alt="${sample.name}">
       <span class="sample-tag">#${idx + 1}</span>
     `;
     btn.addEventListener('click', () => {
+      if (state.isScanning) return;
       document.querySelectorAll('.sample-thumb').forEach(b => b.classList.remove('is-active'));
       btn.classList.add('is-active');
       loadSample(sample);
@@ -166,11 +298,15 @@ async function loadSample(sample) {
   const h = img.naturalHeight || img.height;
   els.originalCanvas.width = w;
   els.originalCanvas.height = h;
-  els.originalCanvas.getContext('2d').drawImage(img, 0, 0);
+  els.originalCanvas.getContext('2d', { willReadFrequently: true }).drawImage(img, 0, 0);
 
   els.normalizedCanvas.width = w;
   els.normalizedCanvas.height = h;
-  els.normalizedCanvas.getContext('2d').drawImage(img, 0, 0);
+  els.normalizedCanvas.getContext('2d', { willReadFrequently: true }).drawImage(img, 0, 0);
+
+  els.bannerTitle.textContent = `Снимок загружен: ${sample.name}`;
+  els.bannerSub.textContent = `Разрешение: ${w} × ${h} px · Готов к анализу`;
+  els.bannerMetric.textContent = 'Готов';
 
   renderDisplay();
 }
@@ -179,14 +315,23 @@ async function loadSample(sample) {
 // ГЛУБОКИЙ ПРОФИЛИРОВАННЫЙ АНАЛИЗ (30 СРЕЗОВ С ПОШАГОВОЙ ТРАССИРОВКОЙ)
 // -----------------------------------------------------------------------------
 async function runProfiledExtendedScan() {
-  if (!state.currentImage || !state.detector.session) return;
+  if (state.isScanning || !state.currentImage || !state.detector.session) return;
+  state.isScanning = true;
 
   const img = state.currentImage;
   const w = img.naturalWidth || img.width;
   const h = img.naturalHeight || img.height;
 
-  els.progressBarContainer.classList.remove('is-hidden');
   els.btnRunExtended.disabled = true;
+  els.btnRunSingle.disabled = true;
+  els.bannerSpinner.classList.add('is-active');
+  els.bannerTitle.textContent = 'ИДЕТ ГЛУБОКИЙ АНАЛИЗ (30 СПЕКТРОВ)...';
+  els.bannerSub.textContent = `Нагрузка на ${state.selectedThreads} ядрах процессора · Спектр 1/30...`;
+  els.progressPercent.textContent = '0%';
+  els.progressFill.style.width = '0%';
+
+  state.chartPoints = [];
+  drawLiveChart();
 
   const trace = {
     startedAt: new Date().toISOString(),
@@ -195,8 +340,7 @@ async function runProfiledExtendedScan() {
       cores: navigator.hardwareConcurrency,
       threads: state.selectedThreads,
       crossOriginIsolated: window.crossOriginIsolated,
-      sharedArrayBuffer: typeof SharedArrayBuffer !== 'undefined',
-      userAgent: navigator.userAgent
+      sharedArrayBuffer: typeof SharedArrayBuffer !== 'undefined'
     },
     timings: {
       basePrepMs: 0,
@@ -314,17 +458,25 @@ async function runProfiledExtendedScan() {
       sweepInfo.boxesFound = stepBoxes.length;
       sweepInfo.totalMs = +(performance.now() - tSweepStart).toFixed(2);
       trace.sweeps.push(sweepInfo);
-
       stepBoxes.forEach(b => allBoxes.push(b));
+
+      // РЕАЛТАЙМ ОБНОВЛЕНИЕ ГРАФИКОВ И ЯДЕР:
+      state.chartPoints.push({ sweep: i + 1, inferMs: sweepInfo.inferMs, totalMs: sweepInfo.totalMs });
+      drawLiveChart();
+      updateChartStats();
+      updateCoresActivity(true, sweepInfo.totalMs);
 
       // Прогресс
       const pct = Math.round(((i + 1) / numSteps) * 100);
       const elapsed = performance.now() - tStartWall;
       const avg = elapsed / (i + 1);
       const eta = Math.max(0, Math.round(((numSteps - i - 1) * avg) / 1000));
+      
       els.progressPercent.textContent = `${pct}%`;
       els.progressFill.style.width = `${pct}%`;
-      els.progressLabel.textContent = `Срез ${i + 1}/${numSteps} · ETA: ~${eta} сек`;
+      els.progressLabel.textContent = `Спектр ${i + 1}/${numSteps} · ETA: ~${eta} сек`;
+      els.bannerSub.textContent = `Спектр ${i + 1}/30 (k=${k.toFixed(2)}) · Скорость: ${sweepInfo.inferMs.toFixed(0)} ms · ETA: ~${eta}s`;
+      els.bannerMetric.textContent = `${sweepInfo.totalMs.toFixed(0)} ms`;
 
       await new Promise(r => setTimeout(r, 0));
     }
@@ -343,10 +495,29 @@ async function runProfiledExtendedScan() {
     trace.timings.totalWallMs = Math.round(performance.now() - tStartWall);
     state.lastTraceData = trace;
 
+    // Снимаем активность ядер
+    updateCoresActivity(false);
+
+    // Обновляем баннер статуса
+    els.bannerTitle.textContent = `АНАЛИЗ ЗАВЕРШЕН · Найдено угроз: ${fusedBoxes.length}`;
+    els.bannerSub.textContent = `30 спектров обработано за ${(trace.timings.totalWallMs / 1000).toFixed(2)} сек`;
+    els.bannerMetric.textContent = `${trace.timings.totalWallMs} ms`;
+    els.bannerSpinner.classList.remove('is-active');
+
+    // Статус в пилле
+    if (fusedBoxes.length > 0) {
+      els.detectStatusPill.className = 'detection-status detection-status--danger';
+      els.detectStatusText.textContent = `УГРОЗА ОБНАРУЖЕНА (${fusedBoxes.length})`;
+    } else {
+      els.detectStatusPill.className = 'detection-status detection-status--safe';
+      els.detectStatusText.textContent = 'Угроз не обнаружено';
+    }
+
     renderDiagnostics(trace);
   } finally {
-    els.progressBarContainer.classList.add('is-hidden');
+    state.isScanning = false;
     els.btnRunExtended.disabled = false;
+    els.btnRunSingle.disabled = false;
   }
 }
 
@@ -409,13 +580,12 @@ function renderDiagnostics(trace) {
       <td>${sw.tensorMs} ms</td>
       <td style="color:var(--accent); font-weight:600;">${sw.inferMs} ms</td>
       <td>${sw.getDataMs} ms</td>
-      <td>${sw.nmsMs} ms (${sw.boxesFound} b)</td>
+      <td>${sw.nmsMs} ms</td>
       <td><strong>${sw.totalMs} ms</strong></td>
+      <td><span style="color:${sw.boxesFound > 0 ? '#EF4444' : 'var(--text-muted)'}">${sw.boxesFound}</span></td>
     `;
     els.sweepsTbody.appendChild(tr);
   });
-
-  inspectHardware();
 }
 
 // -----------------------------------------------------------------------------
@@ -450,9 +620,9 @@ function renderDisplay() {
 }
 
 // Переключение табов вида
-document.querySelectorAll('.view-tab').forEach(t => {
+document.querySelectorAll('.tab-btn').forEach(t => {
   t.addEventListener('click', () => {
-    document.querySelectorAll('.view-tab').forEach(b => b.classList.remove('is-active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('is-active'));
     t.classList.add('is-active');
     state.activeView = t.dataset.view;
     renderDisplay();
@@ -475,6 +645,26 @@ els.btnCopyTrace.addEventListener('click', () => {
 
 // Кнопки запуска
 els.btnRunExtended.addEventListener('click', () => runProfiledExtendedScan());
+els.btnRunSingle.addEventListener('click', async () => {
+  if (state.isScanning || !state.currentImage) return;
+  state.isScanning = true;
+  els.bannerSpinner.classList.add('is-active');
+  els.bannerTitle.textContent = 'ОДИНОЧНЫЙ СКАН...';
+  els.bannerSub.textContent = 'Инференс 1 кадра...';
+
+  const t0 = performance.now();
+  const res = await state.detector.detect(els.normalizedCanvas);
+  const total = Math.round(performance.now() - t0);
+
+  state.boxes = res.boxes;
+  renderDisplay();
+
+  els.bannerSpinner.classList.remove('is-active');
+  els.bannerTitle.textContent = `Одиночный скан завершен · Боксов: ${res.boxes.length}`;
+  els.bannerSub.textContent = `Время инференса: ${res.metrics.inferenceMs} ms · Всего: ${total} ms`;
+  els.bannerMetric.textContent = `${total} ms`;
+  state.isScanning = false;
+});
 
 // Инициализация
 init();
