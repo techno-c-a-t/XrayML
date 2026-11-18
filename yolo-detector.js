@@ -17,7 +17,12 @@ export class YoloDetector {
     this.executionProvider = 'wasm';
   }
 
-  async loadModel(onProgress) {
+  /**
+   * Загрузка модели через ONNX Runtime Web
+   * По умолчанию используется WASM SIMD для гарантированной идентичности и точности детекций
+   * на всех устройствах (десктоп, Android, iOS).
+   */
+  async loadModel(onProgress, forceProvider = 'wasm') {
     if (!window.ort) {
       throw new Error('ONNX Runtime Web (ort) не загружен. Проверьте подключение скрипта.');
     }
@@ -31,30 +36,8 @@ export class YoloDetector {
       window.ort.env.wasm.simd = true;
     }
 
-    const options = {
-      executionProviders: ['wasm'],
-      executionMode: 'parallel',
-      intraOpNumThreads: numThreads,
-      interOpNumThreads: numThreads
-    };
-
-    // Пытаемся запустить WebGPU только если он реально инициализируется, иначе WASM
-    let useWebGPU = false;
-    if (navigator.gpu) {
-      try {
-        const adapter = await navigator.gpu.requestAdapter();
-        if (adapter) {
-          const device = await adapter.requestDevice();
-          if (device) {
-            useWebGPU = true;
-          }
-        }
-      } catch (e) {
-        console.warn('WebGPU недоступен, используем WASM SIMD:', e);
-      }
-    }
-
-    if (useWebGPU) {
+    // Если явно запрошен WebGPU
+    if (forceProvider === 'webgpu' && navigator.gpu) {
       try {
         console.log('Попытка запуска через WebGPU...');
         this.session = await window.ort.InferenceSession.create(this.modelPath, {
@@ -68,8 +51,8 @@ export class YoloDetector {
       }
     }
 
-    // Запуск через WASM SIMD с поддержкой многопоточности
-    console.log(`Запуск сессии через WASM (${numThreads} потоков)...`);
+    // Основной и эталонный провайдер: WASM SIMD (работает детерминированно на ПК и телефонах)
+    console.log(`Запуск сессии через WASM SIMD (${numThreads} потоков)...`);
     const wasmOptions = {
       executionProviders: ['wasm']
     };
@@ -83,6 +66,7 @@ export class YoloDetector {
     this.executionProvider = 'wasm';
     if (onProgress) onProgress({ status: 'ready', provider: 'wasm' });
     return this.session;
+  }
   }
 
   /**
@@ -159,7 +143,10 @@ export class YoloDetector {
     // Выходная форма YOLO11: [1, 4 + num_classes, 8400]
     const outputName = this.session.outputNames[0];
     const outputTensor = results[outputName];
-    const data = outputTensor.data; // Float32Array
+    // Для WebGPU данные находятся в буфере GPU и требуют асинхронной загрузки через getData()
+    const data = typeof outputTensor.getData === 'function'
+      ? await outputTensor.getData()
+      : outputTensor.data;
     const [batch, channels, numBoxes] = outputTensor.dims; // [1, 5, 8400]
 
     // Парсим боксы
