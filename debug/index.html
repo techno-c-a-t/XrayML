@@ -128,17 +128,22 @@
         </div>
       </div>
 
-      <!-- ПЕРЕКЛЮЧАТЕЛЬ ЯДЕР НА ЛЕТУ ДЛЯ ТЕСТА СКОРОСТИ -->
+      <!-- ПЕРЕКЛЮЧАТЕЛЬ ЯДЕР И УСКОРИТЕЛЯ НА ЛЕТУ ДЛЯ ТЕСТА СКОРОСТИ -->
       <div class="thread-tester-card">
         <div class="tester-header">
-          <span class="tester-title">⚡ Сравнить скорость на 1, 2, 4 и 8 ядрах прямо на телефоне:</span>
-          <span class="tester-badge" id="activeThreadsBadge">8 потоков активно</span>
+          <span class="tester-title">⚡ Переключение аппаратного ускорителя и ядер:</span>
+          <span class="tester-badge" id="activeThreadsBadge">Авто / WebGPU</span>
         </div>
         <div class="thread-btns">
-          <button class="btn-thread" data-threads="1">1 ядро (Single Core)</button>
-          <button class="btn-thread" data-threads="2">2 ядра (Dual Core)</button>
-          <button class="btn-thread" data-threads="4">4 ядра (Quad Core)</button>
-          <button class="btn-thread is-active" data-threads="8">8 ядер (All S20 FE Cores)</button>
+          <button class="btn-provider is-active" data-provider="webgpu" style="background:#10B981; color:#0d1117; font-weight:700;">🚀 WebGPU (GPU Adreno)</button>
+          <button class="btn-provider" data-provider="wasm">💻 CPU WASM SIMD</button>
+        </div>
+        <div class="thread-btns" style="margin-top: 8px;">
+          <span style="font-size:0.75rem; color:var(--text-muted); width:100%;">Число потоков CPU (для WASM режима):</span>
+          <button class="btn-thread" data-threads="1">1 ядро (Single)</button>
+          <button class="btn-thread" data-threads="2">2 ядра (Dual)</button>
+          <button class="btn-thread" data-threads="4">4 ядра (Quad)</button>
+          <button class="btn-thread is-active" data-threads="8">8 ядер (All big.LITTLE)</button>
         </div>
       </div>
     </section>

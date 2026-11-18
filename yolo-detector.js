@@ -18,40 +18,48 @@ export class YoloDetector {
   }
 
   /**
-   * Загрузка модели через ONNX Runtime Web
-   * По умолчанию используется WASM SIMD для гарантированной идентичности и точности детекций
-   * на всех устройствах (десктоп, Android, iOS).
+   * Загрузка модели через ONNX Runtime Web.
+   * Приоритет:
+   * 1. WebGPU (аппаратный GPU, в 4-10 раз быстрее CPU, работает на Adreno/Snapdragon и десктопных GPU)
+   * 2. WASM SIMD (fallback если WebGPU не поддерживается)
    */
-  async loadModel(onProgress, forceProvider = 'wasm') {
+  async loadModel(onProgress, forceProvider = 'auto') {
     if (!window.ort) {
       throw new Error('ONNX Runtime Web (ort) не загружен. Проверьте подключение скрипта.');
     }
 
-    if (onProgress) onProgress({ status: 'loading', message: 'Инициализация нейросети...' });
+    if (onProgress) onProgress({ status: 'loading', message: 'Инициализация ускорителя...' });
 
-    // Настройка многопоточности WASM (использование доступных ядер CPU)
     const numThreads = Math.min(8, navigator.hardwareConcurrency || 4);
     if (window.ort.env && window.ort.env.wasm) {
       window.ort.env.wasm.numThreads = numThreads;
       window.ort.env.wasm.simd = true;
     }
 
-    // Если явно запрошен WebGPU
-    if (forceProvider === 'webgpu' && navigator.gpu) {
+    // 1. Попытка запуска через WebGPU (если auto или webgpu)
+    const shouldTryWebGPU = (forceProvider === 'auto' || forceProvider === 'webgpu') && !!navigator.gpu;
+    if (shouldTryWebGPU) {
       try {
-        console.log('Попытка запуска через WebGPU...');
-        this.session = await window.ort.InferenceSession.create(this.modelPath, {
-          executionProviders: ['webgpu', 'wasm']
-        });
-        this.executionProvider = 'webgpu';
-        if (onProgress) onProgress({ status: 'ready', provider: 'webgpu' });
-        return this.session;
+        console.log('Попытка запуска через аппаратный WebGPU...');
+        const adapter = await navigator.gpu.requestAdapter();
+        if (adapter) {
+          const device = await adapter.requestDevice();
+          if (device) {
+            this.session = await window.ort.InferenceSession.create(this.modelPath, {
+              executionProviders: ['webgpu', 'wasm']
+            });
+            this.executionProvider = 'webgpu';
+            console.log('✅ Успешная инициализация WebGPU!');
+            if (onProgress) onProgress({ status: 'ready', provider: 'webgpu' });
+            return this.session;
+          }
+        }
       } catch (err) {
-        console.warn('WebGPU не смог создать сессию модели, переключаемся на WASM SIMD:', err);
+        console.warn('WebGPU недоступен или вернул ошибку, переключаемся на WASM SIMD:', err);
       }
     }
 
-    // Основной и эталонный провайдер: WASM SIMD (работает детерминированно на ПК и телефонах)
+    // 2. Резервный провайдер: WASM SIMD
     console.log(`Запуск сессии через WASM SIMD (${numThreads} потоков)...`);
     const wasmOptions = {
       executionProviders: ['wasm']
