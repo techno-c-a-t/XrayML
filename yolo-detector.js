@@ -83,11 +83,14 @@ export class YoloDetector {
     const padX = (dstSize - newW) / 2;
     const padY = (dstSize - newH) / 2;
 
-    // Вспомогательный offscreen canvas для масштабирования с padding (114, 114, 114)
-    const offCanvas = document.createElement('canvas');
-    offCanvas.width = dstSize;
-    offCanvas.height = dstSize;
-    const ctx = offCanvas.getContext('2d', { willReadFrequently: true });
+    // Переиспользуемый offscreen canvas для letterbox
+    if (!this._offCanvas) {
+      this._offCanvas = document.createElement('canvas');
+      this._offCanvas.width = dstSize;
+      this._offCanvas.height = dstSize;
+      this._offCtx = this._offCanvas.getContext('2d', { willReadFrequently: true });
+    }
+    const ctx = this._offCtx;
 
     // Серый фон для паддинга
     ctx.fillStyle = '#727272';
@@ -97,16 +100,19 @@ export class YoloDetector {
     const imgData = ctx.getImageData(0, 0, dstSize, dstSize);
     const pixels = imgData.data;
 
-    // Формируем плоский массив Float32 для тензора NCHW: 3 * 640 * 640
-    const floatArr = new Float32Array(3 * dstSize * dstSize);
+    // Переиспользуемый буфер Float32Array для исключения GC-пауз
     const area = dstSize * dstSize;
+    if (!this._floatArr || this._floatArr.length !== 3 * area) {
+      this._floatArr = new Float32Array(3 * area);
+    }
+    const floatArr = this._floatArr;
+    const inv255 = 1.0 / 255.0;
 
     for (let i = 0; i < area; i++) {
       const pIdx = i * 4;
-      // Нормализация в диапазон [0.0, 1.0]
-      floatArr[i] = pixels[pIdx] / 255.0;            // R
-      floatArr[area + i] = pixels[pIdx + 1] / 255.0; // G
-      floatArr[area * 2 + i] = pixels[pIdx + 2] / 255.0; // B
+      floatArr[i] = pixels[pIdx] * inv255;
+      floatArr[area + i] = pixels[pIdx + 1] * inv255;
+      floatArr[area * 2 + i] = pixels[pIdx + 2] * inv255;
     }
 
     const tensor = new window.ort.Tensor('float32', floatArr, [1, 3, dstSize, dstSize]);
@@ -114,6 +120,68 @@ export class YoloDetector {
     return {
       tensor,
       meta: { srcW, srcH, scale, padX, padY }
+    };
+  }
+
+  /**
+   * Быстрый инференс напрямую из подготовленного Float32 тензора
+   */
+  async detectTensor(tensor, meta, customConf = null) {
+    if (!this.session) {
+      throw new Error('Модель еще не загружена.');
+    }
+
+    const confThreshold = customConf !== null ? customConf : this.confThreshold;
+    const inputName = this.session.inputNames[0];
+    const feeds = {};
+    feeds[inputName] = tensor;
+
+    const tInferStart = performance.now();
+    const results = await this.session.run(feeds);
+    const tInfer = performance.now() - tInferStart;
+
+    const outputName = this.session.outputNames[0];
+    const outputTensor = results[outputName];
+    const data = typeof outputTensor.getData === 'function'
+      ? await outputTensor.getData()
+      : outputTensor.data;
+    const [batch, channels, numBoxes] = outputTensor.dims;
+
+    const rawBoxes = [];
+    for (let i = 0; i < numBoxes; i++) {
+      const conf = data[4 * numBoxes + i];
+      if (conf >= confThreshold) {
+        const cx = data[0 * numBoxes + i];
+        const cy = data[1 * numBoxes + i];
+        const w = data[2 * numBoxes + i];
+        const h = data[3 * numBoxes + i];
+
+        const origX1 = Math.max(0, (cx - w / 2 - meta.padX) / meta.scale);
+        const origY1 = Math.max(0, (cy - h / 2 - meta.padY) / meta.scale);
+        const origX2 = Math.min(meta.srcW, (cx + w / 2 - meta.padX) / meta.scale);
+        const origY2 = Math.min(meta.srcH, (cy + h / 2 - meta.padY) / meta.scale);
+
+        rawBoxes.push({
+          x1: origX1,
+          y1: origY1,
+          x2: origX2,
+          y2: origY2,
+          width: origX2 - origX1,
+          height: origY2 - origY1,
+          conf,
+          classId: 0,
+          label: this.classNames[0] || 'Threat'
+        });
+      }
+    }
+
+    const finalBoxes = this.applyNMS(rawBoxes, this.iouThreshold);
+    return {
+      boxes: finalBoxes,
+      metrics: {
+        inferenceMs: Math.round(tInfer),
+        provider: this.executionProvider
+      }
     };
   }
 

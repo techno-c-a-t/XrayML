@@ -1,5 +1,5 @@
-import { XrayNormalizer } from './xray-normalizer.js';
-import { YoloDetector } from './yolo-detector.js?v=3';
+import { XrayNormalizer } from './xray-normalizer.js?v=4';
+import { YoloDetector } from './yolo-detector.js?v=4';
 
 // Список встроенных сэмплов из папки samples/
 const BUILTIN_SAMPLES = [
@@ -530,36 +530,83 @@ async function processImage(img, forceExtended = false) {
     // EXTENDED SCAN MODE
     console.log(`[Extended Scan] Старт анализа: шагов=${state.extSteps}, conf=${state.extConf}, minHits=${state.extMinHits}, iou=${state.extIou}`);
     setWorkerStatus(true, `Сканирование ${state.extSteps} спектров...`);
-    setProgress(true, `Сканирование спектров (0/${state.extSteps})`, 0);
+    setProgress(true, `Оценка времени сканирования...`, 0);
     try {
       const tStart = performance.now();
       normCtx.drawImage(img, 0, 0);
 
+      // 1. Быстрая подготовка базы нормализации на полном разрешении (для финишной отрисовки)
       const basePrep = state.normalizer.prepareBase(els.normalizedCanvas);
       state.polarityInfo = basePrep.polarity;
 
-      const workingImgData = new ImageData(new Uint8ClampedArray(basePrep.baseImageData.data), w, h);
-      const allBoxes = [];
+      // 2. Для сверхбыстрого инференса создаем масштабированный холст под нейросеть (letterbox 640x640)
+      const dstSize = state.detector.inputSize || 640;
+      const scale = Math.min(dstSize / w, dstSize / h);
+      const newW = Math.round(w * scale);
+      const newH = Math.round(h * scale);
+      const padX = (dstSize - newW) / 2;
+      const padY = (dstSize - newH) / 2;
+      const meta = { srcW: w, srcH: h, scale, padX, padY };
 
-      const kSteps = [];
+      const sweepCanvas = document.createElement('canvas');
+      sweepCanvas.width = dstSize;
+      sweepCanvas.height = dstSize;
+      const sweepCtx = sweepCanvas.getContext('2d', { willReadFrequently: true });
+      sweepCtx.fillStyle = '#727272';
+      sweepCtx.fillRect(0, 0, dstSize, dstSize);
+      // Отрисовываем нормализованную базу в letterbox 640x640
+      sweepCtx.drawImage(els.normalizedCanvas, 0, 0, w, h, padX, padY, newW, newH);
+
+      const baseSweepImgData = sweepCtx.getImageData(0, 0, dstSize, dstSize);
+      const workSweepImgData = new ImageData(new Uint8ClampedArray(baseSweepImgData.data), dstSize, dstSize);
+
+      const allBoxes = [];
       const numSteps = state.extSteps;
       const stepSize = 0.95 / (numSteps - 1);
+      const kSteps = [];
       for (let i = 0; i < numSteps; i++) {
         kSteps.push(parseFloat((i * stepSize).toFixed(3)));
       }
 
       let totalInferMs = 0;
+      const area = dstSize * dstSize;
+      const floatArr = new Float32Array(3 * area);
+      const inv255 = 1.0 / 255.0;
 
       for (let i = 0; i < kSteps.length; i++) {
+        const stepStart = performance.now();
         const k = kSteps[i];
         const pct = Math.round(((i + 1) / kSteps.length) * 100);
-        setWorkerStatus(true, `Спектр ${i + 1}/${kSteps.length} (k=${k.toFixed(2)})...`);
-        setProgress(true, `Спектральный срез ${i + 1}/${kSteps.length} (десатурация k=${k.toFixed(2)})`, pct);
 
-        state.normalizer.applySaturationOnly(basePrep.baseImageData, k, workingImgData);
-        normCtx.putImageData(workingImgData, 0, 0);
+        // Динамический прогноз оставшегося времени (ETA)
+        let etaText = '';
+        if (i > 0) {
+          const elapsed = performance.now() - tStart;
+          const avgPerStep = elapsed / i;
+          const remainingSec = Math.max(0, Math.round(((kSteps.length - i) * avgPerStep) / 1000));
+          etaText = remainingSec > 0 ? ` (~${remainingSec} сек)` : ' (завершение...)';
+        } else {
+          etaText = ' (расчет времени...)';
+        }
 
-        const res = await state.detector.detect(els.normalizedCanvas, state.extConf);
+        const progressTitle = `${i18n[currentLang].docTitle.includes('Threat') ? 'Спектральный анализ' : 'Спектральны аналіз'}: ${i + 1}/${kSteps.length}${etaText}`;
+        setWorkerStatus(true, `Срез ${i + 1}/${kSteps.length}${etaText}`);
+        setProgress(true, progressTitle, pct);
+
+        // Быстрая десатурация среза на 640x640
+        state.normalizer.applySaturationOnly(baseSweepImgData, k, workSweepImgData);
+        const px = workSweepImgData.data;
+
+        // Прямое формирование Float32 тензора без повторного создания Canvas и GC
+        for (let p = 0; p < area; p++) {
+          const pIdx = p * 4;
+          floatArr[p] = px[pIdx] * inv255;
+          floatArr[area + p] = px[pIdx + 1] * inv255;
+          floatArr[area * 2 + p] = px[pIdx + 2] * inv255;
+        }
+
+        const tensor = new window.ort.Tensor('float32', floatArr, [1, 3, dstSize, dstSize]);
+        const res = await state.detector.detectTensor(tensor, meta, state.extConf);
         totalInferMs += res.metrics.inferenceMs;
 
         if (res.boxes.length > 0) {
@@ -571,14 +618,16 @@ async function processImage(img, forceExtended = false) {
           allBoxes.push(b);
         });
 
-        // Не блокируем UI
+        // Не блокируем UI (даем браузеру обновить анимацию прогресса)
         await new Promise(r => setTimeout(r, 0));
       }
 
       console.log(`[Extended Scan] Всего собрано детекций до слияния: ${allBoxes.length}`);
 
-      state.normalizer.applySaturationOnly(basePrep.baseImageData, state.normalizer.kSat, workingImgData);
-      normCtx.putImageData(workingImgData, 0, 0);
+      // Финальная десатурация нормализованного холста для пользователя
+      const workingFullImgData = new ImageData(new Uint8ClampedArray(basePrep.baseImageData.data), w, h);
+      state.normalizer.applySaturationOnly(basePrep.baseImageData, state.normalizer.kSat, workingFullImgData);
+      normCtx.putImageData(workingFullImgData, 0, 0);
 
       const minHits = state.extMinHits;
       const fusedBoxes = state.detector.mergeMultiSpectralBoxes(allBoxes, state.extIou, minHits);
