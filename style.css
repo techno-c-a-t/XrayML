@@ -259,31 +259,6 @@ body[data-theme="cyber"] .app-header {
   gap: 8px;
 }
 
-@media (max-width: 480px) {
-  .header-container {
-    padding-block: 6px;
-    gap: 8px;
-  }
-  .brand-title {
-    font-size: 0.8438rem;
-  }
-  .brand-tag {
-    display: none;
-  }
-  .header-right {
-    gap: 6px;
-  }
-  .lang-btn {
-    padding: 4px 6px;
-    font-size: 0.6875rem;
-  }
-  .theme-btn, .btn-github-icon {
-    width: 30px;
-    height: 30px;
-    font-size: 0.8125rem;
-  }
-}
-
 .brand-tag {
   font-family: var(--font-mono);
   font-size: 0.625rem;
@@ -300,7 +275,7 @@ body[data-theme="cyber"] .app-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
 }
 
@@ -471,20 +446,79 @@ body[data-theme="cyber"] .app-header {
   color: var(--text-muted);
   transition: all var(--transition);
 }
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-  transition: all var(--transition);
-}
 
 .btn-github-icon:hover {
   color: var(--text);
   border-color: var(--border-focus);
   transform: translateY(-1px);
+}
+
+/* Header Responsive overrides */
+@media (max-width: 600px) {
+  .header-container {
+    padding-block: 6px;
+    padding-inline: 8px;
+    gap: 6px;
+    min-height: 44px;
+    flex-wrap: nowrap;
+  }
+  .brand {
+    gap: 6px;
+    min-width: 0;
+    flex-shrink: 1;
+  }
+  .brand-badge {
+    width: 26px;
+    height: 26px;
+    min-width: 26px;
+  }
+  .brand-badge svg {
+    width: 14px;
+    height: 14px;
+  }
+  .brand-title {
+    font-size: 0.8125rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .brand-tag {
+    display: none;
+  }
+  .header-right {
+    gap: 4px;
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+  }
+  .hardware-pill {
+    padding: 3px 6px;
+    font-size: 0.625rem;
+  }
+  .hardware-pill span:last-child {
+    max-width: 58px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .lang-btn {
+    padding: 3px 6px;
+    font-size: 0.6563rem;
+    min-height: 28px;
+    gap: 4px;
+  }
+  .theme-btn, .btn-github-icon {
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    min-height: 28px;
+    font-size: 0.75rem;
+  }
+}
+
+@media (max-width: 380px) {
+  .brand-title span:last-child {
+    display: none; /* Hide 'Threat Scanner' subtitle on tiny screens so 'X-Ray' fits gracefully */
+  }
 }
 
 /* --------------------------------------------------------------------------
