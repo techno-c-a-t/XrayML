@@ -207,71 +207,6 @@ function updateChartStats() {
 }
 
 // -----------------------------------------------------------------------------
-// Переключение провайдера (WebGPU vs WASM) и ядер
-// -----------------------------------------------------------------------------
-document.querySelectorAll('.btn-provider').forEach(btn => {
-  btn.addEventListener('click', async () => {
-    if (state.isScanning) return;
-    document.querySelectorAll('.btn-provider').forEach(b => {
-      b.classList.remove('is-active');
-      b.style.background = '';
-      b.style.color = '';
-    });
-    btn.classList.add('is-active');
-    btn.style.background = '#10B981';
-    btn.style.color = '#0d1117';
-
-    const provider = btn.dataset.provider;
-    els.hardwareStatus.textContent = `Инициализация ${provider.toUpperCase()}...`;
-    els.statusDot.classList.add('status-dot--loading');
-
-    await state.detector.loadModel((p) => {
-      if (p.status === 'ready') {
-        const title = p.provider === 'webgpu' ? 'WebGPU (Adreno GPU)' : `WASM (${state.selectedThreads} thr)`;
-        els.hardwareStatus.textContent = title;
-        els.statusDot.classList.remove('status-dot--loading');
-      }
-    }, provider);
-
-    els.activeThreadsBadge.textContent = state.detector.executionProvider === 'webgpu' ? '🚀 Аппаратный WebGPU (GPU)' : `CPU WASM (${state.selectedThreads} ядер)`;
-
-    if (state.currentImage) {
-      runProfiledExtendedScan();
-    }
-  });
-});
-
-document.querySelectorAll('.btn-thread').forEach(btn => {
-  btn.addEventListener('click', async () => {
-    if (state.isScanning) return;
-    document.querySelectorAll('.btn-thread').forEach(b => b.classList.remove('is-active'));
-    btn.classList.add('is-active');
-    const threads = parseInt(btn.dataset.threads, 10);
-    state.selectedThreads = threads;
-    setupCoresGrid();
-
-    els.hardwareStatus.textContent = `Смена ядер (${threads} thr)...`;
-    els.statusDot.classList.add('status-dot--loading');
-    
-    if (window.ort?.env?.wasm) {
-      window.ort.env.wasm.numThreads = threads;
-    }
-    await state.detector.loadModel((p) => {
-      if (p.status === 'ready') {
-        els.hardwareStatus.textContent = `WASM (${threads} potok)`;
-        els.statusDot.classList.remove('status-dot--loading');
-      }
-    }, 'wasm');
-
-    els.activeThreadsBadge.textContent = `CPU WASM (${threads} ядер)`;
-
-    if (state.currentImage) {
-      runProfiledExtendedScan();
-    }
-  });
-});
-
-// -----------------------------------------------------------------------------
 // Инициализация
 // -----------------------------------------------------------------------------
 async function init() {
@@ -280,22 +215,28 @@ async function init() {
   buildCarousel();
 
   try {
-    els.hardwareStatus.textContent = 'Загрузка весов ONNX...';
+    els.hardwareStatus.textContent = 'Инициализация WebGPU...';
     await state.detector.loadModel((p) => {
       if (p.status === 'ready') {
-        els.hardwareStatus.textContent = `WASM SIMD (${state.selectedThreads} thr)`;
+        els.hardwareStatus.textContent = 'WebGPU (Adreno/GPU)';
         els.statusDot.classList.remove('status-dot--loading');
       }
     });
+
+    els.activeThreadsBadge.textContent = '🚀 Аппаратный WebGPU (GPU)';
 
     if (SAMPLES.length > 0) {
       await loadSample(SAMPLES[0]);
       runProfiledExtendedScan();
     }
   } catch (err) {
-    console.error('Ошибка инициализации:', err);
-    els.hardwareStatus.textContent = 'Ошибка ONNX';
+    console.error('Ошибка инициализации WebGPU:', err);
+    els.hardwareStatus.textContent = 'Ошибка WebGPU';
     els.statusDot.style.background = '#ef4444';
+    els.statusDot.classList.remove('status-dot--loading');
+    els.bannerTitle.textContent = 'Ошибка инициализации WebGPU';
+    els.bannerSub.textContent = err.message || 'WebGPU не поддерживается';
+    alert(err.message || 'Ошибка WebGPU');
   }
 }
 

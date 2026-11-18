@@ -357,11 +357,10 @@ async function init() {
 
   // Инициализация нейросети
   try {
-    els.hardwareStatus.textContent = 'Загрузка весов ONNX...';
+    els.hardwareStatus.textContent = 'Инициализация WebGPU...';
     await state.detector.loadModel((progress) => {
       if (progress.status === 'ready') {
-        const backendName = progress.provider === 'webgpu' ? 'WebGPU (60 FPS)' : 'WASM SIMD';
-        els.hardwareStatus.textContent = backendName;
+        els.hardwareStatus.textContent = 'WebGPU (Adreno/GPU)';
         els.statusDot.classList.remove('status-dot--loading');
       }
     });
@@ -369,14 +368,15 @@ async function init() {
     // По умолчанию при загрузке страницы: загружаем первый образец и сразу запускаем ГЛУБОКОЕ МУЛЬТИ-СКАНИРОВАНИЕ
     if (state.samples.length > 0) {
       await loadSample(state.samples[0], false);
-      console.log('Автозапуск глубокого мульти-сканирования при старте страницы...');
+      console.log('Автозапуск глубокого мульти-сканирования на WebGPU...');
       await processImage(state.currentImage, true);
     }
   } catch (err) {
-    console.error('Ошибка загрузки модели:', err);
-    els.hardwareStatus.textContent = 'Ошибка ONNX';
+    console.error('Ошибка загрузки модели WebGPU:', err);
+    els.hardwareStatus.textContent = 'Ошибка WebGPU';
     els.statusDot.style.background = '#EF4444';
     els.statusDot.classList.remove('status-dot--loading');
+    alert(err.message || 'Ошибка WebGPU');
   }
 }
 
