@@ -1,5 +1,5 @@
-import { XrayNormalizer } from './xray-normalizer.js?v=7';
-import { YoloDetector } from './yolo-detector.js?v=7';
+import { XrayNormalizer } from './xray-normalizer.js?v=4';
+import { YoloDetector } from './yolo-detector.js?v=4';
 
 // Список встроенных сэмплов из папки samples/
 const BUILTIN_SAMPLES = [
@@ -357,11 +357,11 @@ async function init() {
 
   // Инициализация нейросети
   try {
-    els.hardwareStatus.textContent = 'Инициализация ускорителя...';
+    els.hardwareStatus.textContent = 'Загрузка весов ONNX...';
     await state.detector.loadModel((progress) => {
       if (progress.status === 'ready') {
-        const title = progress.provider === 'webgpu' ? 'WebGPU (Adreno/GPU)' : 'WASM SIMD';
-        els.hardwareStatus.textContent = title;
+        const backendName = progress.provider === 'webgpu' ? 'WebGPU (60 FPS)' : 'WASM SIMD';
+        els.hardwareStatus.textContent = backendName;
         els.statusDot.classList.remove('status-dot--loading');
       }
     });
@@ -369,7 +369,7 @@ async function init() {
     // По умолчанию при загрузке страницы: загружаем первый образец и сразу запускаем ГЛУБОКОЕ МУЛЬТИ-СКАНИРОВАНИЕ
     if (state.samples.length > 0) {
       await loadSample(state.samples[0], false);
-      console.log('Автозапуск глубокого мульти-сканирования...');
+      console.log('Автозапуск глубокого мульти-сканирования при старте страницы...');
       await processImage(state.currentImage, true);
     }
   } catch (err) {

@@ -42,9 +42,6 @@ export class XrayNormalizer {
     // Шаг 3: Точка белого
     this.alignWhitePoint(data, this.targetWhite);
 
-    // Гарантированно обновляем исходный холст нормализованным базовым изображением
-    ctx.putImageData(imgData, 0, 0);
-
     return {
       baseImageData: imgData,
       polarity: polarityResult,
