@@ -67,7 +67,6 @@ export class YoloDetector {
     if (onProgress) onProgress({ status: 'ready', provider: 'wasm' });
     return this.session;
   }
-  }
 
   /**
    * Подготовка входного тензора [1, 3, 640, 640] с сохранением пропорций (Letterbox)
