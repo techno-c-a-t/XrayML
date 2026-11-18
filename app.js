@@ -1,5 +1,5 @@
-import { XrayNormalizer } from './xray-normalizer.js?v=4';
-import { YoloDetector } from './yolo-detector.js?v=4';
+import { XrayNormalizer } from './xray-normalizer.js?v=8';
+import { YoloDetector } from './yolo-detector.js?v=8';
 
 // Список встроенных сэмплов из папки samples/
 const BUILTIN_SAMPLES = [
@@ -207,12 +207,18 @@ function detectTheme() {
 
 let currentTheme = detectTheme();
 
+// -----------------------------------------------------------------------------
+// Расчет количества ядер CPU и воркеров пула
+// -----------------------------------------------------------------------------
+const HARDWARE_CORES = navigator.hardwareConcurrency || 4;
+const WORKER_COUNT = HARDWARE_CORES <= 4 ? Math.max(1, HARDWARE_CORES - 1) : HARDWARE_CORES - 2;
+
 // Состояние приложения
 const state = {
   samples: [...BUILTIN_SAMPLES],
   currentImageId: null,
   currentImage: null,
-  scanResults: {}, // Кэш результатов сканирования для каждого снимка: { [id]: { boxes, metrics, polarityInfo } }
+  scanResults: {}, // Кэш результатов сканирования: { [id]: { boxes, metrics, polarityInfo } }
   activeTab: 'detected', // 'detected' | 'normalized' | 'original'
   boxes: [],
   polarityInfo: null,
@@ -223,9 +229,154 @@ const state = {
   extIou: 0.45,
   extConf: 0.20,     // Порог 20%
   extMinHits: 2,     // 2 кадра подтверждения
+  hardwareCores: HARDWARE_CORES,
+  workerCount: WORKER_COUNT,
+  pool: null,
   normalizer: new XrayNormalizer({ kSat: 0.42, targetWhite: 248 }),
   detector: new YoloDetector({ modelPath: 'models/best.onnx', confThreshold: 0.35 })
 };
+window.state = state;
+
+// -----------------------------------------------------------------------------
+// Пул параллельных Web Workers с очередью задач
+// -----------------------------------------------------------------------------
+class ParallelWorkerPool {
+  constructor(size, modelPath) {
+    this.size = size;
+    this.modelPath = modelPath;
+    this.workers = [];
+    this.idleWorkers = [];
+  }
+
+  async init(onProgress) {
+    let readyCount = 0;
+    const promises = [];
+
+    for (let i = 0; i < this.size; i++) {
+      const p = new Promise((resolve, reject) => {
+        const w = new Worker('./inference-worker.js?v=8');
+        w.workerId = i;
+
+        const onInitMsg = (evt) => {
+          const { type, workerId, error } = evt.data;
+          if (type === 'ready') {
+            w.removeEventListener('message', onInitMsg);
+            readyCount++;
+            if (onProgress) onProgress(readyCount, this.size);
+            this.idleWorkers.push(w);
+            resolve(w);
+          } else if (type === 'error') {
+            w.removeEventListener('message', onInitMsg);
+            reject(new Error(`Воркер #${workerId} ошибка: ${error}`));
+          }
+        };
+
+        w.addEventListener('message', onInitMsg);
+        w.onerror = (err) => {
+          reject(new Error(`Сбой скрипта воркера #${i}: ${err.message}`));
+        };
+
+        w.postMessage({ type: 'init', payload: { workerId: i, modelPath: this.modelPath } });
+        this.workers.push(w);
+      });
+      promises.push(p);
+    }
+
+    await Promise.all(promises);
+  }
+
+  async setBaseImage(baseRgba) {
+    const promises = this.workers.map(w => {
+      return new Promise(resolve => {
+        const handler = (evt) => {
+          if (evt.data && evt.data.type === 'base_set') {
+            w.removeEventListener('message', handler);
+            resolve();
+          }
+        };
+        w.addEventListener('message', handler);
+        w.postMessage({ type: 'set_base', payload: { baseRgba: new Uint8ClampedArray(baseRgba) } });
+      });
+    });
+    await Promise.all(promises);
+  }
+
+  async runParallelSweeps(tasks, onSweepDone) {
+    return new Promise((resolve) => {
+      const totalSweeps = tasks.length;
+      let completedCount = 0;
+      const allBoxes = [];
+      const queue = [...tasks];
+
+      const dispatchNext = () => {
+        if (completedCount === totalSweeps) {
+          resolve(allBoxes);
+          return;
+        }
+
+        while (this.idleWorkers.length > 0 && queue.length > 0) {
+          const worker = this.idleWorkers.pop();
+          const task = queue.shift();
+
+          const onMessage = (evt) => {
+            const data = evt.data;
+            if (data.type === 'sweep_done') {
+              if (onSweepDone) onSweepDone(data.workerId, data.sweepIndex, data.k, data.prepMs, data.inferMs, data.totalMs, data.boxes);
+              data.boxes.forEach(b => allBoxes.push(b));
+            } else if (data.type === 'idle') {
+              worker.removeEventListener('message', onMessage);
+              this.idleWorkers.push(worker);
+              completedCount++;
+              dispatchNext();
+            } else if (data.type === 'sweep_error') {
+              console.error(`Ошибка среза #${data.sweepIndex} на воркере #${data.workerId}:`, data.error);
+              worker.removeEventListener('message', onMessage);
+              this.idleWorkers.push(worker);
+              completedCount++;
+              dispatchNext();
+            }
+          };
+
+          worker.addEventListener('message', onMessage);
+          worker.postMessage({ type: 'run_sweep', payload: task });
+        }
+      };
+
+      dispatchNext();
+    });
+  }
+
+  async runSingleSweep(task) {
+    while (this.idleWorkers.length === 0) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+    const worker = this.idleWorkers.pop();
+
+    return new Promise((resolve, reject) => {
+      let resultBoxes = [];
+      let totalMs = 0;
+
+      const onMessage = (evt) => {
+        const data = evt.data;
+        if (data.type === 'sweep_done') {
+          resultBoxes = data.boxes;
+          totalMs = data.totalMs || data.inferMs;
+        } else if (data.type === 'idle') {
+          worker.removeEventListener('message', onMessage);
+          this.idleWorkers.push(worker);
+          resolve({ boxes: resultBoxes, inferMs: totalMs });
+        } else if (data.type === 'sweep_error') {
+          worker.removeEventListener('message', onMessage);
+          this.idleWorkers.push(worker);
+          reject(new Error(data.error));
+        }
+      };
+
+      worker.addEventListener('message', onMessage);
+      worker.postMessage({ type: 'run_sweep', payload: task });
+    });
+  }
+}
 
 // Элементы DOM
 const els = {
@@ -348,39 +499,40 @@ function cycleTheme() {
   }
 }
 
-// Инициализация
+// Инициализация приложения
 async function init() {
   setTheme(currentTheme);
   setLanguage(currentLang);
   buildCarousel();
   bindEvents();
 
-  // Инициализация нейросети
   try {
-    els.hardwareStatus.textContent = 'Загрузка весов ONNX...';
-    await state.detector.loadModel((progress) => {
-      if (progress.status === 'ready') {
-        const backendName = progress.provider === 'webgpu' ? 'WebGPU (60 FPS)' : 'WASM SIMD';
-        els.hardwareStatus.textContent = backendName;
-        els.statusDot.classList.remove('status-dot--loading');
-      }
+    els.hardwareStatus.textContent = `Запуск пула (${state.workerCount} ядер)...`;
+    els.statusDot.classList.add('status-dot--loading');
+
+    state.pool = new ParallelWorkerPool(state.workerCount, 'models/best.onnx');
+    await state.pool.init((ready, total) => {
+      els.hardwareStatus.textContent = `Воркеры: ${ready}/${total}...`;
     });
 
-    // По умолчанию при загрузке страницы: загружаем первый образец и сразу запускаем ГЛУБОКОЕ МУЛЬТИ-СКАНИРОВАНИЕ
+    els.hardwareStatus.textContent = `WASM SIMD (${state.workerCount} ядер)`;
+    els.statusDot.classList.remove('status-dot--loading');
+
+    // По умолчанию при первой загрузке запускаем глубокое мульти-сканирование первого снимка
     if (state.samples.length > 0) {
       await loadSample(state.samples[0], false);
-      console.log('Автозапуск глубокого мульти-сканирования при старте страницы...');
+      console.log('Автозапуск глубокого параллельного мульти-сканирования при старте...');
       await processImage(state.currentImage, true);
     }
   } catch (err) {
-    console.error('Ошибка загрузки модели:', err);
-    els.hardwareStatus.textContent = 'Ошибка ONNX';
+    console.error('Ошибка инициализации пула воркеров:', err);
+    els.hardwareStatus.textContent = 'Ошибка воркеров';
     els.statusDot.style.background = '#EF4444';
     els.statusDot.classList.remove('status-dot--loading');
   }
 }
 
-// Генерация карусели сэмплов (включая статус детекции из кэша и удаление)
+// Генерация карусели сэмплов
 function buildCarousel() {
   els.samplesCarousel.innerHTML = '';
   if (els.samplesCounter) {
@@ -468,6 +620,7 @@ async function loadSample(sample, autoDetect = false) {
 
     const w = img.naturalWidth || img.width;
     const h = img.naturalHeight || img.height;
+
     els.originalCanvas.width = w;
     els.originalCanvas.height = h;
     const origCtx = els.originalCanvas.getContext('2d', { willReadFrequently: true });
@@ -484,6 +637,9 @@ async function loadSample(sample, autoDetect = false) {
       state.boxes = cached.boxes;
       state.metrics = cached.metrics;
       state.polarityInfo = cached.polarityInfo;
+      if (els.normalizeToggle.checked) {
+        state.normalizer.process(els.normalizedCanvas);
+      }
       updateTelemetry(w, h);
     } else {
       state.boxes = [];
@@ -494,7 +650,7 @@ async function loadSample(sample, autoDetect = false) {
 
     renderDisplay();
 
-    if (autoDetect && state.detector.session) {
+    if (autoDetect && state.pool) {
       await processImage(img, false);
     }
   } catch (err) {
@@ -527,19 +683,26 @@ async function processImage(img, forceExtended = false) {
   const isExtended = forceExtended;
 
   if (isExtended) {
-    // EXTENDED SCAN MODE
-    console.log(`[Extended Scan] Старт анализа: шагов=${state.extSteps}, conf=${state.extConf}, minHits=${state.extMinHits}, iou=${state.extIou}`);
+    // EXTENDED SCAN MODE (Параллельный спектральный ансамбль)
+    if (!state.pool) {
+      alert('Пул воркеров еще не инициализирован');
+      state.isProcessing = false;
+      return;
+    }
+
+    console.log(`[Extended Scan] Старт параллельного анализа: шагов=${state.extSteps}, conf=${state.extConf}, minHits=${state.extMinHits}, iou=${state.extIou}`);
     setWorkerStatus(true, `Сканирование ${state.extSteps} спектров...`);
     setProgress(true, `Оценка времени сканирования...`, 0);
+
     try {
       const tStart = performance.now();
       normCtx.drawImage(img, 0, 0);
 
-      // 1. Быстрая подготовка базы нормализации на полном разрешении (для финишной отрисовки)
+      // 1. Базовая физическая нормализация на полном разрешении кадра
       const basePrep = state.normalizer.prepareBase(els.normalizedCanvas);
       state.polarityInfo = basePrep.polarity;
 
-      // 2. Для сверхбыстрого инференса создаем масштабированный холст под нейросеть (letterbox 640x640)
+      // 2. Масштабирование до 640x640 для спектрального анализа
       const dstSize = state.detector.inputSize || 640;
       const scale = Math.min(dstSize / w, dstSize / h);
       const newW = Math.round(w * scale);
@@ -554,95 +717,57 @@ async function processImage(img, forceExtended = false) {
       const sweepCtx = sweepCanvas.getContext('2d', { willReadFrequently: true });
       sweepCtx.fillStyle = '#727272';
       sweepCtx.fillRect(0, 0, dstSize, dstSize);
-      // Отрисовываем нормализованную базу в letterbox 640x640
       sweepCtx.drawImage(els.normalizedCanvas, 0, 0, w, h, padX, padY, newW, newH);
 
       const baseSweepImgData = sweepCtx.getImageData(0, 0, dstSize, dstSize);
-      const workSweepImgData = new ImageData(new Uint8ClampedArray(baseSweepImgData.data), dstSize, dstSize);
 
-      const allBoxes = [];
+      // 3. Синхронизируем базовый кадр в память воркеров (<10 мс)
+      await state.pool.setBaseImage(baseSweepImgData.data);
+
+      // 4. Формирование пула задач (30 срезов)
       const numSteps = state.extSteps;
-      const stepSize = 0.95 / (numSteps - 1);
-      const kSteps = [];
+      const stepSize = numSteps > 1 ? 0.95 / (numSteps - 1) : 0;
+      const tasks = [];
       for (let i = 0; i < numSteps; i++) {
-        kSteps.push(parseFloat((i * stepSize).toFixed(3)));
+        const k = parseFloat((i * stepSize).toFixed(3));
+        tasks.push({ sweepIndex: i, k, meta, dstSize, confThreshold: state.extConf });
       }
 
-      let totalInferMs = 0;
-      const area = dstSize * dstSize;
-      const floatArr = new Float32Array(3 * area);
-      const inv255 = 1.0 / 255.0;
+      // 5. Запуск параллельного инференса на выделенных ядрах
+      let completedCount = 0;
+      const allBoxes = await state.pool.runParallelSweeps(
+        tasks,
+        (workerId, sweepIndex, k, prepMs, inferMs, totalMs, boxes) => {
+          completedCount++;
+          const pct = Math.round((completedCount / numSteps) * 100);
 
-      for (let i = 0; i < kSteps.length; i++) {
-        const stepStart = performance.now();
-        const k = kSteps[i];
-        const pct = Math.round(((i + 1) / kSteps.length) * 100);
+          let etaText = '';
+          if (completedCount > 1) {
+            const elapsed = performance.now() - tStart;
+            const avg = elapsed / completedCount;
+            const remSec = Math.max(0, Math.round(((numSteps - completedCount) * avg) / 1000));
+            etaText = remSec > 0 ? ` (~${remSec} сек)` : ' (завершение...)';
+          }
 
-        // Динамический прогноз оставшегося времени (ETA)
-        let etaText = '';
-        if (i > 0) {
-          const elapsed = performance.now() - tStart;
-          const avgPerStep = elapsed / i;
-          const remainingSec = Math.max(0, Math.round(((kSteps.length - i) * avgPerStep) / 1000));
-          etaText = remainingSec > 0 ? ` (~${remainingSec} сек)` : ' (завершение...)';
-        } else {
-          etaText = ' (расчет времени...)';
+          const label = `${currentLang === 'be' ? 'Спектральны аналіз' : currentLang === 'en' ? 'Spectral analysis' : 'Спектральный анализ'}: ${completedCount}/${numSteps}${etaText}`;
+          setProgress(true, label, pct);
+          setWorkerStatus(true, `Срез ${completedCount}/${numSteps}${etaText}`);
         }
+      );
 
-        const progressTitle = `${i18n[currentLang].docTitle.includes('Threat') ? 'Спектральный анализ' : 'Спектральны аналіз'}: ${i + 1}/${kSteps.length}${etaText}`;
-        setWorkerStatus(true, `Срез ${i + 1}/${kSteps.length}${etaText}`);
-        setProgress(true, progressTitle, pct);
+      // 6. Слияние детекций спектров через WBF с точным подсчетом срезов (hits)
+      const fusedBoxes = state.detector.mergeMultiSpectralBoxes(allBoxes, state.extIou, state.extMinHits, numSteps);
 
-        // Быстрая десатурация среза на 640x640
-        state.normalizer.applySaturationOnly(baseSweepImgData, k, workSweepImgData);
-        const px = workSweepImgData.data;
-
-        // Прямое формирование Float32 тензора без повторного создания Canvas и GC
-        for (let p = 0; p < area; p++) {
-          const pIdx = p * 4;
-          floatArr[p] = px[pIdx] * inv255;
-          floatArr[area + p] = px[pIdx + 1] * inv255;
-          floatArr[area * 2 + p] = px[pIdx + 2] * inv255;
-        }
-
-        const tensor = new window.ort.Tensor('float32', floatArr, [1, 3, dstSize, dstSize]);
-        const res = await state.detector.detectTensor(tensor, meta, state.extConf);
-        totalInferMs += res.metrics.inferenceMs;
-
-        if (res.boxes.length > 0) {
-          console.log(` -> [Спектр ${i + 1} | k=${k.toFixed(2)}] найдено боксов: ${res.boxes.length}`, res.boxes.map(b => `${b.label} (${(b.conf * 100).toFixed(1)}%)`));
-        }
-
-        res.boxes.forEach(b => {
-          b.kSat = k;
-          allBoxes.push(b);
-        });
-
-        // Не блокируем UI (даем браузеру обновить анимацию прогресса)
-        await new Promise(r => setTimeout(r, 0));
-      }
-
-      console.log(`[Extended Scan] Всего собрано детекций до слияния: ${allBoxes.length}`);
-
-      // Финальная десатурация нормализованного холста для пользователя
-      const workingFullImgData = new ImageData(new Uint8ClampedArray(basePrep.baseImageData.data), w, h);
-      state.normalizer.applySaturationOnly(basePrep.baseImageData, state.normalizer.kSat, workingFullImgData);
-      normCtx.putImageData(workingFullImgData, 0, 0);
-
-      const minHits = state.extMinHits;
-      const fusedBoxes = state.detector.mergeMultiSpectralBoxes(allBoxes, state.extIou, minHits);
-      console.log(`[Extended Scan] После WBF слияния (minHits=${minHits}): ${fusedBoxes.length} боксов`, fusedBoxes);
+      // 7. Десатурация нормализованного холста для пользователя
+      state.normalizer.process(els.normalizedCanvas);
 
       const tEnd = performance.now();
+      const totalWallMs = Math.round(tEnd - tStart);
 
       state.boxes = fusedBoxes;
       state.metrics = {
-        preprocessMs: Math.round(tEnd - tStart - totalInferMs),
-        inferenceMs: Math.round(totalInferMs),
-        postprocessMs: 0,
-        totalMs: Math.round(tEnd - tStart),
-        provider: `${state.detector.executionProvider} × ${numSteps} sweeps`,
-        normalizeMs: 0
+        totalMs: totalWallMs,
+        provider: `WASM SIMD (${state.workerCount} ядер) × ${numSteps} срезов`
       };
 
       if (state.currentImageId) {
@@ -665,26 +790,58 @@ async function processImage(img, forceExtended = false) {
       state.isProcessing = false;
     }
   } else {
-    // SINGLE MODE
+    // SINGLE MODE (Одиночный скан на прогретом ядре #0 пула)
+    if (!state.pool) {
+      alert('Пул воркеров еще не инициализирован');
+      state.isProcessing = false;
+      return;
+    }
+
     showLoader(i18n[currentLang].loaderInference);
+    const t0 = performance.now();
+
     try {
-      let normTime = 0;
+      normCtx.drawImage(img, 0, 0);
       if (shouldNormalize) {
-        const t0 = performance.now();
         const normRes = state.normalizer.process(els.normalizedCanvas);
         state.polarityInfo = normRes.polarity;
-        normTime = performance.now() - t0;
       } else {
         state.polarityInfo = null;
       }
 
       const inputCanvas = shouldNormalize ? els.normalizedCanvas : els.originalCanvas;
-      const res = await state.detector.detect(inputCanvas, state.detector.confThreshold);
+      const dstSize = 640;
+      const scale = Math.min(dstSize / w, dstSize / h);
+      const newW = Math.round(w * scale);
+      const newH = Math.round(h * scale);
+      const padX = (dstSize - newW) / 2;
+      const padY = (dstSize - newH) / 2;
+      const meta = { srcW: w, srcH: h, scale, padX, padY };
 
+      const sweepCanvas = document.createElement('canvas');
+      sweepCanvas.width = dstSize;
+      sweepCanvas.height = dstSize;
+      const sweepCtx = sweepCanvas.getContext('2d', { willReadFrequently: true });
+      sweepCtx.fillStyle = '#727272';
+      sweepCtx.fillRect(0, 0, dstSize, dstSize);
+      sweepCtx.drawImage(inputCanvas, 0, 0, w, h, padX, padY, newW, newH);
+
+      const baseData = sweepCtx.getImageData(0, 0, dstSize, dstSize);
+      await state.pool.setBaseImage(baseData.data);
+
+      const res = await state.pool.runSingleSweep({
+        sweepIndex: 0,
+        k: state.normalizer.kSat,
+        meta,
+        dstSize,
+        confThreshold: state.detector.confThreshold
+      });
+
+      const totalWallMs = Math.round(performance.now() - t0);
       state.boxes = res.boxes;
       state.metrics = {
-        ...res.metrics,
-        normalizeMs: Math.round(normTime)
+        totalMs: totalWallMs,
+        provider: `WASM SIMD (${state.workerCount} ядер) · 1 срез`
       };
 
       if (state.currentImageId) {
@@ -719,6 +876,8 @@ function renderDisplay() {
     sourceCanvas = els.normalizeToggle.checked ? els.normalizedCanvas : els.originalCanvas;
   }
 
+  if (!sourceCanvas || sourceCanvas.width === 0 || sourceCanvas.height === 0) return;
+
   display.width = sourceCanvas.width;
   display.height = sourceCanvas.height;
   ctx.drawImage(sourceCanvas, 0, 0);
@@ -734,8 +893,8 @@ function drawBoundingBoxes(ctx, imgW, imgH) {
   state.boxes.forEach(box => {
     const x = box.x1;
     const y = box.y1;
-    const w = box.x2 - box.x1;
-    const h = box.y2 - box.y1;
+    const w = box.width || (box.x2 - box.x1);
+    const h = box.height || (box.y2 - box.y1);
 
     // Свечение и рамка в неоновом киберпанк-стиле
     ctx.save();
@@ -761,9 +920,11 @@ function drawBoundingBoxes(ctx, imgW, imgH) {
     ctx.moveTo(x + w - cornerSize, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - cornerSize);
     ctx.stroke();
 
-    // Лейбл оружия
+    // Лейбл оружия с точным числом подтвержденных спектров (hits)
     const confPct = box.conf != null ? (box.conf * 100).toFixed(1) : '—';
-    const labelText = `⚠ ${i18n[currentLang].weaponDetected} ${confPct}%`;
+    const totalSweeps = box.totalSweeps || state.extSteps;
+    const hitsText = box.detectionsCount ? ` · ${box.detectionsCount}/${totalSweeps} hits` : '';
+    const labelText = `⚠ ${i18n[currentLang].weaponDetected} ${confPct}%${hitsText}`;
 
     const fontSize = Math.max(12, Math.round(imgW / 40));
     ctx.font = `bold ${fontSize}px 'JetBrains Mono', monospace`;
@@ -1032,7 +1193,7 @@ function bindEvents() {
     els.extPresetSelect.value = 'custom';
   });
 
-  // Ползунки одиночного режима (БЕЗ автозапуска)
+  // Ползунки одиночного режима (БЕЗ автозапуска детекции, обновление холста нормализации)
   els.confRange.addEventListener('input', (e) => {
     const val = parseFloat(e.target.value);
     els.confVal.textContent = val.toFixed(2);
@@ -1044,6 +1205,7 @@ function bindEvents() {
     els.satVal.textContent = val.toFixed(2);
     state.normalizer.kSat = val;
     if (state.currentImage && els.normalizeToggle.checked) {
+      els.normalizedCanvas.getContext('2d').drawImage(els.originalCanvas, 0, 0);
       state.normalizer.process(els.normalizedCanvas);
       renderDisplay();
     }
@@ -1054,6 +1216,7 @@ function bindEvents() {
     els.whiteVal.textContent = val;
     state.normalizer.targetWhite = val;
     if (state.currentImage && els.normalizeToggle.checked) {
+      els.normalizedCanvas.getContext('2d').drawImage(els.originalCanvas, 0, 0);
       state.normalizer.process(els.normalizedCanvas);
       renderDisplay();
     }
@@ -1061,6 +1224,7 @@ function bindEvents() {
 
   els.normalizeToggle.addEventListener('change', () => {
     if (state.currentImage) {
+      els.normalizedCanvas.getContext('2d').drawImage(els.originalCanvas, 0, 0);
       if (els.normalizeToggle.checked) {
         state.normalizer.process(els.normalizedCanvas);
       }

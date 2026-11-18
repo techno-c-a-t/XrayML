@@ -295,7 +295,7 @@ export class YoloDetector {
    * @param {number} iouThreshold - порог слияния пересечений
    * @param {number} minDetections - минимальное число подтверждений (1 = параноидальный режим: сохранять даже одиночные детекции)
    */
-  mergeMultiSpectralBoxes(boxes, iouThreshold = 0.5, minDetections = 1) {
+  mergeMultiSpectralBoxes(boxes, iouThreshold = 0.45, minDetections = 1, totalSweeps = 30) {
     if (boxes.length === 0) return [];
 
     // Группируем перекрывающиеся боксы в кластеры
@@ -317,15 +317,17 @@ export class YoloDetector {
       clusters.push(cluster);
     }
 
-    // Фильтруем кластеры по минимальному порогу подтверждений (позволяет отсекать шум или включать параноидальный режим)
-    const validClusters = clusters.filter(c => c.length >= minDetections);
+    const fusedBoxes = [];
+    for (const cluster of clusters) {
+      const uniqueSweeps = new Set(cluster.map(b => b.sweepIndex !== undefined ? b.sweepIndex : b.kSat));
+      const hitsCount = uniqueSweeps.size;
 
-    // Для каждого кластера усредняем координаты с весом уверенности (WBF)
-    const fusedBoxes = validClusters.map(cluster => {
+      // Фильтруем кластеры по минимальному порогу подтверждений
+      if (hitsCount < minDetections) continue;
+
       let sumConf = 0;
       let sumX1 = 0, sumY1 = 0, sumX2 = 0, sumY2 = 0;
       let maxConf = 0;
-      let bestKSat = cluster[0].kSat;
 
       cluster.forEach(b => {
         const w = b.conf;
@@ -336,7 +338,6 @@ export class YoloDetector {
         sumY2 += b.y2 * w;
         if (b.conf > maxConf) {
           maxConf = b.conf;
-          bestKSat = b.kSat;
         }
       });
 
@@ -345,7 +346,7 @@ export class YoloDetector {
       const avgX2 = sumX2 / sumConf;
       const avgY2 = sumY2 / sumConf;
 
-      return {
+      fusedBoxes.push({
         x1: avgX1,
         y1: avgY1,
         x2: avgX2,
@@ -353,13 +354,14 @@ export class YoloDetector {
         width: avgX2 - avgX1,
         height: avgY2 - avgY1,
         conf: maxConf,
-        classId: cluster[0].classId,
-        label: cluster[0].label,
-        detectionsCount: cluster.length, // Сколько раз был замечен на разных k_sat
-        bestKSat
-      };
-    });
+        classId: 0,
+        label: 'Gun',
+        detectionsCount: hitsCount,
+        totalSweeps: totalSweeps
+      });
+    }
 
+    fusedBoxes.sort((a, b) => b.conf - a.conf);
     return fusedBoxes;
   }
 

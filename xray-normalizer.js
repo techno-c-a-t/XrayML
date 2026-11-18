@@ -42,11 +42,30 @@ export class XrayNormalizer {
     // Шаг 3: Точка белого
     this.alignWhitePoint(data, this.targetWhite);
 
+    // Записываем нормализованную базу обратно в холст
+    ctx.putImageData(imgData, 0, 0);
+
     return {
       baseImageData: imgData,
       polarity: polarityResult,
       width,
       height
+    };
+  }
+
+  /**
+   * Полный цикл для одиночного режима: prepareBase + applySaturationOnly
+   */
+  process(sourceCanvas, customKSat = null) {
+    const k = customKSat !== null ? customKSat : this.kSat;
+    const base = this.prepareBase(sourceCanvas);
+    const ctx = sourceCanvas.getContext('2d', { willReadFrequently: true });
+    const workImgData = new ImageData(new Uint8ClampedArray(base.baseImageData.data), base.width, base.height);
+    this.applySaturationOnly(base.baseImageData, k, workImgData);
+    ctx.putImageData(workImgData, 0, 0);
+    return {
+      imageData: workImgData,
+      polarity: base.polarity
     };
   }
 
@@ -67,21 +86,6 @@ export class XrayNormalizer {
       dst[i + 2] = Math.min(255, Math.max(0, Math.round(mean + kSat * (b - mean))));
       dst[i + 3] = src[i + 3];
     }
-  }
-
-  /**
-   * Принимает Canvas или ImageData, возвращает новый ImageData после нормализации
-   */
-  process(sourceCanvas, customKSat = null) {
-    const k = customKSat !== null ? customKSat : this.kSat;
-    const base = this.prepareBase(sourceCanvas);
-    const resultImgData = new ImageData(new Uint8ClampedArray(base.baseImageData.data), base.width, base.height);
-    this.compressSaturation(resultImgData.data, k);
-
-    return {
-      imageData: resultImgData,
-      polarity: base.polarity
-    };
   }
 
   detectPolarity(data, width, height) {

@@ -1,8 +1,32 @@
+# Python / Virtual Environment
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Datasets & Training Data / Temp
+data/
+runs/
+logs/
+outputs/
+val_check/
+gun_dataset_preview/
+comparison_result.png
+src/
+setup_git_ssh.sh
+
+# OS / IDE
 .DS_Store
 Thumbs.db
-*.swp
-*.swo
 .idea/
 .vscode/
-__pycache__/
-*.pyc
+*.swp
+*.swo
+
+# Node / Temporary
+node_modules/
+dist/
+.cache/
