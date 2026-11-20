@@ -4,7 +4,7 @@
  * 1 воркер = 1 выделенное физическое ядро (intraOpNumThreads: 1, WASM SIMD).
  * Десатурация, нормализация тензора и инференс ONNX выполняются полностью внутри воркера.
  */
-importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.all.min.js');
+importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.all.min.js');
 
 let session = null;
 let workerId = -1;
@@ -55,11 +55,14 @@ self.onmessage = async (e) => {
     workerId = payload.workerId;
     try {
       if (self.ort && self.ort.env && self.ort.env.wasm) {
-        self.ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+        self.ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
         self.ort.env.wasm.numThreads = 1;
         self.ort.env.wasm.simd = true;
       }
-      session = await self.ort.InferenceSession.create(payload.modelPath, {
+      const modelInput = payload.modelBuffer
+        ? new Uint8Array(payload.modelBuffer)
+        : payload.modelPath;
+      session = await self.ort.InferenceSession.create(modelInput, {
         executionProviders: ['wasm']
       });
       self.postMessage({ type: 'ready', workerId });
@@ -67,11 +70,12 @@ self.onmessage = async (e) => {
       self.postMessage({ type: 'error', workerId, error: err.message || String(err) });
     }
   } else if (type === 'set_base') {
-    // Сохраняем базовый 640x640 RGBA буфер снимка для срезов
     baseRgba = payload.baseRgba;
     self.postMessage({ type: 'base_set', workerId });
   } else if (type === 'run_sweep') {
     const { sweepIndex, k, meta, dstSize } = payload;
+    let tensor = null;
+    let outputTensor = null;
     try {
       self.postMessage({ type: 'busy', workerId, sweepIndex, k });
 
@@ -101,21 +105,23 @@ self.onmessage = async (e) => {
 
       // 2. Инференс ONNX
       const tInfer0 = performance.now();
-      const tensor = new self.ort.Tensor('float32', floatArr, [1, 3, dstSize, dstSize]);
+      tensor = new self.ort.Tensor('float32', floatArr, [1, 3, dstSize, dstSize]);
       const feeds = {};
       feeds[session.inputNames[0]] = tensor;
       const results = await session.run(feeds);
       const inferMs = performance.now() - tInfer0;
 
       // 3. Декодирование боксов из 8400 анкоров
-      const outputTensor = results[session.outputNames[0]];
+      outputTensor = results[session.outputNames[0]];
       const data = outputTensor.data;
-      const [batch, channels, numBoxes] = outputTensor.dims;
+      const [, , numBoxes] = outputTensor.dims;
       const confThreshold = payload.confThreshold !== undefined ? payload.confThreshold : 0.15;
 
       const rawBoxes = [];
+      let maxRawConf = 0;
       for (let b = 0; b < numBoxes; b++) {
         const conf = data[4 * numBoxes + b];
+        if (conf > maxRawConf) maxRawConf = conf;
         if (conf >= confThreshold) {
           const cx = data[0 * numBoxes + b];
           const cy = data[1 * numBoxes + b];
@@ -139,7 +145,8 @@ self.onmessage = async (e) => {
       }
 
       // NMS внутри одного кадра: отсекаем дублирующие соседние анкоры для одного объекта
-      const finalBoxes = applyNMS(rawBoxes, 0.45);
+      const nmsIou = payload.nmsIouThreshold !== undefined ? payload.nmsIouThreshold : 0.45;
+      const finalBoxes = applyNMS(rawBoxes, nmsIou);
 
       self.postMessage({
         type: 'sweep_done',
@@ -149,12 +156,16 @@ self.onmessage = async (e) => {
         prepMs: Math.round(prepMs),
         inferMs: Math.round(inferMs),
         totalMs: Math.round(prepMs + inferMs),
+        maxRawConf,
         boxes: finalBoxes
       });
       self.postMessage({ type: 'idle', workerId });
     } catch (err) {
       self.postMessage({ type: 'sweep_error', workerId, sweepIndex, error: err.message || String(err) });
       self.postMessage({ type: 'idle', workerId });
+    } finally {
+      tensor?.dispose?.();
+      outputTensor?.dispose?.();
     }
   }
 };

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+  <title>GPU &amp; Compute Diagnostics (/diagpu) | X-Ray Threat Scanner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="diagpu.css">
+  <script src="../debug/coi-serviceworker.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.all.min.js"></script>
+</head>
+<body data-theme="dark">
+  <div class="ambient-glow" aria-hidden="true"></div>
+  <div class="grid-pattern" aria-hidden="true"></div>
+
+  <header class="app-header">
+    <div class="container header-container">
+      <div class="brand">
+        <div class="brand-badge" aria-hidden="true">🔬</div>
+        <div class="brand-text">
+          <span class="brand-title">GPU <span class="accent-text">Diagnostics</span></span>
+          <span class="brand-tag">/diagpu</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <a href="../debug/" class="btn btn--secondary btn-sm">← К /debug</a>
+        <a href="../" class="btn btn--secondary btn-sm">К сканеру</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="container diag-main">
+    <!-- Hero Verdict & Actions -->
+    <section class="diag-hero-card">
+      <div class="diag-hero-top">
+        <div>
+          <span class="section-tag">COMPUTE &amp; MIGRATION ANALYTICS</span>
+          <h1 class="diag-title">Диагностика GPU, WebGPU, WebGL2 и ONNX Runtime</h1>
+          <p class="diag-sub">Почему не заводится GPU, какие лимиты у видеочипа и стоит ли мигрировать пайплайн.</p>
+        </div>
+        <div class="diag-actions">
+          <button class="btn btn--primary" id="btnRunDiag" type="button">▶ Запустить полную диагностику</button>
+          <button class="btn btn--secondary" id="btnRunBench" type="button">⚡ Бенчмарк ONNX (GPU vs WASM)</button>
+          <button class="btn btn--secondary" id="btnCopyJson" type="button">📋 Копировать JSON</button>
+        </div>
+      </div>
+
+      <!-- Вердикт: что как почему и как достать GPU -->
+      <div class="verdict-box" id="verdictBox">
+        <div class="verdict-status" id="verdictStatus">Ожидание запуска...</div>
+        <ul class="verdict-reasons" id="verdictReasons"></ul>
+      </div>
+    </section>
+
+    <!-- Bento Grid: Environment + WebGPU + WebGL2 -->
+    <section class="diag-grid">
+      <article class="diag-card">
+        <div class="diag-card-head">
+          <h2>1. Среда и безопасность (Secure Context)</h2>
+          <span class="diag-pill" id="envPill">—</span>
+        </div>
+        <div class="kv-list" id="envList"></div>
+      </article>
+
+      <article class="diag-card">
+        <div class="diag-card-head">
+          <h2>2. WebGPU Adapter &amp; WGSL Compute</h2>
+          <span class="diag-pill" id="webgpuPill">—</span>
+        </div>
+        <div class="kv-list" id="webgpuList"></div>
+      </article>
+
+      <article class="diag-card">
+        <div class="diag-card-head">
+          <h2>3. WebGL2 (запасной GPU-путь / TF.js)</h2>
+          <span class="diag-pill" id="webglPill">—</span>
+        </div>
+        <div class="kv-list" id="webglList"></div>
+      </article>
+
+      <article class="diag-card">
+        <div class="diag-card-head">
+          <h2>4. Лимиты и фичи WebGPU (для батчинга и FP16)</h2>
+          <span class="diag-pill" id="limitsPill">—</span>
+        </div>
+        <div class="kv-list" id="limitsList"></div>
+      </article>
+    </section>
+
+    <!-- ONNX Runtime Benchmark & Error Trace -->
+    <section class="diag-card">
+      <div class="diag-card-head">
+        <h2>5. Живой тест ONNX Runtime Web 1.22.0 (models/best_dynamic.onnx)</h2>
+        <span class="diag-pill" id="ortPill">Не запускался</span>
+      </div>
+      <div class="bench-table-wrap" tabindex="0" role="region" aria-label="Результаты бенчмарка ONNX">
+        <table class="bench-table">
+          <thead>
+            <tr>
+              <th>Провайдер</th>
+              <th>Конфиг</th>
+              <th>Статус</th>
+              <th>Паритет</th>
+              <th>Старт</th>
+              <th>Прогон</th>
+              <th>На 1 кадр</th>
+              <th>Детали / Ошибка</th>
+            </tr>
+          </thead>
+          <tbody id="benchTbody">
+            <tr><td colspan="8" class="muted-cell">Нажмите «⚡ Бенчмарк ONNX (GPU vs WASM)» для замера</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Raw JSON -->
+    <section class="diag-card">
+      <div class="diag-card-head">
+        <h2>6. Сырой диагностический отчёт (JSON)</h2>
+      </div>
+      <pre class="json-pre" id="rawJsonPre">{}</pre>
+    </section>
+  </main>
+
+  <script type="module" src="diagpu.js?v=1"></script>
+</body>
+</html>

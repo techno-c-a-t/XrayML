@@ -4,7 +4,7 @@
  * 1 воркер = 1 выделенное физическое ядро (intraOpNumThreads: 1, WASM SIMD).
  * Десатурация, нормализация тензора и инференс ONNX выполняются полностью внутри воркера.
  */
-importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.all.min.js');
+importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.all.min.js');
 
 let session = null;
 let workerId = -1;
@@ -55,7 +55,7 @@ self.onmessage = async (e) => {
     workerId = payload.workerId;
     try {
       if (self.ort && self.ort.env && self.ort.env.wasm) {
-        self.ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+        self.ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
         self.ort.env.wasm.numThreads = 1;
         self.ort.env.wasm.simd = true;
       }
@@ -114,8 +114,10 @@ self.onmessage = async (e) => {
       const confThreshold = payload.confThreshold !== undefined ? payload.confThreshold : 0.15;
 
       const rawBoxes = [];
+      let maxRawConf = 0;
       for (let b = 0; b < numBoxes; b++) {
         const conf = data[4 * numBoxes + b];
+        if (conf > maxRawConf) maxRawConf = conf;
         if (conf >= confThreshold) {
           const cx = data[0 * numBoxes + b];
           const cy = data[1 * numBoxes + b];
@@ -139,7 +141,8 @@ self.onmessage = async (e) => {
       }
 
       // NMS внутри одного кадра: отсекаем дублирующие соседние анкоры для одного объекта
-      const finalBoxes = applyNMS(rawBoxes, 0.45);
+      const nmsIou = payload.nmsIouThreshold !== undefined ? payload.nmsIouThreshold : 0.45;
+      const finalBoxes = applyNMS(rawBoxes, nmsIou);
 
       self.postMessage({
         type: 'sweep_done',
@@ -149,6 +152,7 @@ self.onmessage = async (e) => {
         prepMs: Math.round(prepMs),
         inferMs: Math.round(inferMs),
         totalMs: Math.round(prepMs + inferMs),
+        maxRawConf,
         boxes: finalBoxes
       });
       self.postMessage({ type: 'idle', workerId });
